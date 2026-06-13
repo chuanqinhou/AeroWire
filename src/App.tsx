@@ -1,679 +1,66 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
-import { Circle, Group, Image as KonvaImage, Layer, Line, Rect, Shape, Stage, Text } from "react-konva";
 import Konva from "konva";
+import { CanvasEditor } from "./components/CanvasEditor";
+import { LeftPanel } from "./components/LeftPanel";
+import { RightPanel } from "./components/RightPanel";
+import { TopBar } from "./components/TopBar";
 import {
-  Cable,
-  Download,
-  FileUp,
-  FolderOpen,
-  HardDriveDownload,
-  ImagePlus,
-  Plus,
-  Save,
-  Trash2,
-  Zap,
-} from "lucide-react";
-
-type PinKind =
-  | "VCC"
-  | "GND"
-  | "UART_TX"
-  | "UART_RX"
-  | "PWM"
-  | "I2C_SCL"
-  | "I2C_SDA"
-  | "VBAT"
-  | "SIGNAL";
-
-type Voltage = "3.3V" | "5V" | "9V" | "12V" | "VBAT" | "N/A";
-type ToolMode = "select" | "pin" | "wire";
-type Severity = "error" | "warning" | "ok";
-type IssueTarget = { kind: "wire" | "pin" | "board"; id: string };
-type BoardCrop = { left: number; right: number; top: number; bottom: number };
-type WireLineStyle = "solid" | "dashed" | "dotted";
-type WireEndStyle = "none" | "dot" | "arrow";
-type WireArrowDirection = "forward" | "reverse";
-type WireBend = {
-  id: string;
-  x: number;
-  y: number;
-};
-type NetworkType = {
-  id: string;
-  name: string;
-  baseKind: PinKind;
-  defaultVoltage: string;
-};
-
-type Pin = {
-  id: string;
-  boardId: string;
-  x: number;
-  y: number;
-  label: string;
-  typeLabel: string;
-  networkTypeId: string | null;
-  labelOffsetX: number;
-  labelOffsetY: number;
-  kind: PinKind;
-  voltage: string;
-  maxCurrentMa: number;
-};
-
-type Board = {
-  id: string;
-  name: string;
-  imageSrc: string;
-  x: number;
-  y: number;
-  originalWidth: number;
-  originalHeight: number;
-  scale: number;
-  crop: BoardCrop;
-  locked: boolean;
-};
-
-type Wire = {
-  id: string;
-  fromPinId: string;
-  toPinId: string;
-  color: string;
-  width: number;
-  label: string;
-  labelFontSize: number;
-  labelOffsetX: number;
-  labelOffsetY: number;
-  bends: WireBend[];
-  routeX: number | null;
-  routeY: number | null;
-  lineStyle: WireLineStyle;
-  endStyle: WireEndStyle;
-  arrowDirection: WireArrowDirection;
-  status: Severity;
-  message: string;
-};
-
-type Project = {
-  boards: Board[];
-  pins: Pin[];
-  wires: Wire[];
-  networkTypes: NetworkType[];
-};
-
-type ProjectIssue = {
-  id: string;
-  severity: Exclude<Severity, "ok">;
-  text: string;
-  target: IssueTarget;
-};
-
-const STORAGE_KEY = "aerowire.project.v1";
-const powerKinds: PinKind[] = ["VCC", "VBAT"];
-const signalKinds: PinKind[] = ["UART_TX", "UART_RX", "PWM", "I2C_SCL", "I2C_SDA", "SIGNAL"];
-
-const initialProject: Project = {
-  boards: [],
-  pins: [],
-  wires: [],
-  networkTypes: [],
-};
-
-const pinKinds: PinKind[] = ["VCC", "GND", "UART_TX", "UART_RX", "PWM", "I2C_SCL", "I2C_SDA", "VBAT", "SIGNAL"];
-const voltages: Voltage[] = ["N/A", "3.3V", "5V", "9V", "12V", "VBAT"];
-const wireLineStyles: WireLineStyle[] = ["solid", "dashed", "dotted"];
-const wireEndStyles: WireEndStyle[] = ["none", "dot", "arrow"];
-const wireArrowDirections: WireArrowDirection[] = ["forward", "reverse"];
-
-const wireColorByKind: Record<PinKind, string> = {
-  VCC: "#e33d2e",
-  VBAT: "#d1221f",
-  GND: "#1f2933",
-  UART_TX: "#f4b000",
-  UART_RX: "#2e9f62",
-  PWM: "#2477d4",
-  I2C_SCL: "#7857d8",
-  I2C_SDA: "#14a6a0",
-  SIGNAL: "#6a7280",
-};
-
-const pinColorByKind: Record<PinKind, string> = {
-  VCC: "#e33d2e",
-  VBAT: "#d1221f",
-  GND: "#1f2933",
-  UART_TX: "#f4b000",
-  UART_RX: "#2e9f62",
-  PWM: "#2477d4",
-  I2C_SCL: "#7857d8",
-  I2C_SDA: "#14a6a0",
-  SIGNAL: "#6a7280",
-};
-
-const BOARD_GRID_COLUMNS = 2;
-const BOARD_GRID_GAP_X = 520;
-const BOARD_GRID_GAP_Y = 360;
-const BOARD_GRID_START_X = 72;
-const BOARD_GRID_START_Y = 72;
-const CANVAS_GRID_SIZE = 48;
-
-function uid(prefix: string) {
-  return `${prefix}_${Math.random().toString(36).slice(2, 9)}_${Date.now().toString(36)}`;
-}
-
-function useImage(src: string) {
-  const [image, setImage] = useState<HTMLImageElement | null>(null);
-
-  useEffect(() => {
-    if (!src) {
-      setImage(null);
-      return;
-    }
-
-    const img = new Image();
-    img.onload = () => setImage(img);
-    img.src = src;
-  }, [src]);
-
-  return image;
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function getBoardVisibleSize(board: Board) {
-  const innerWidth = Math.max(24, board.originalWidth - board.crop.left - board.crop.right);
-  const innerHeight = Math.max(24, board.originalHeight - board.crop.top - board.crop.bottom);
-  return {
-    width: Math.round(innerWidth * board.scale),
-    height: Math.round(innerHeight * board.scale),
-  };
-}
-
-function getBoardPlacement(slot: number) {
-  return {
-    x: BOARD_GRID_START_X + (slot % BOARD_GRID_COLUMNS) * BOARD_GRID_GAP_X,
-    y: BOARD_GRID_START_Y + Math.floor(slot / BOARD_GRID_COLUMNS) * BOARD_GRID_GAP_Y,
-  };
-}
-
-function createDefaultWireBends(a: { x: number; y: number }, b: { x: number; y: number }) {
-  const midX = Math.round((a.x + b.x) / 2);
-  return [
-    { id: uid("bend"), x: midX, y: a.y },
-    { id: uid("bend"), x: midX, y: b.y },
-  ];
-}
-
-function getDefaultWireWidth(from: Pin, to: Pin) {
-  if (powerKinds.includes(from.kind) || powerKinds.includes(to.kind)) return 5;
-  if (from.kind === "GND" || to.kind === "GND") return 4;
-  return 3;
-}
-
-function getDefaultWireAppearance(
-  from: Pin,
-  to: Pin,
-): Pick<Wire, "lineStyle" | "endStyle" | "arrowDirection"> {
-  if (powerKinds.includes(from.kind) || powerKinds.includes(to.kind)) {
-    return {
-      lineStyle: "solid" as WireLineStyle,
-      endStyle: "dot" as WireEndStyle,
-      arrowDirection: "forward" as WireArrowDirection,
-    };
-  }
-
-  if (from.kind === "GND" || to.kind === "GND") {
-    return {
-      lineStyle: "dashed" as WireLineStyle,
-      endStyle: "dot" as WireEndStyle,
-      arrowDirection: "forward" as WireArrowDirection,
-    };
-  }
-
-  if (
-    (from.kind === "UART_TX" && to.kind === "UART_RX") ||
-    (from.kind === "UART_RX" && to.kind === "UART_TX")
-  ) {
-    return {
-      lineStyle: "dotted" as WireLineStyle,
-      endStyle: "arrow" as WireEndStyle,
-      arrowDirection: from.kind === "UART_TX" ? "forward" : "reverse",
-    };
-  }
-
-  return {
-    lineStyle: "solid" as WireLineStyle,
-    endStyle: "none" as WireEndStyle,
-    arrowDirection: "forward" as WireArrowDirection,
-  };
-}
-
-function remapPinsForBoard(
-  pins: Pin[],
-  boardBefore: Board,
-  boardAfter: Board,
-) {
-  const beforeSize = getBoardVisibleSize(boardBefore);
-  const afterSize = getBoardVisibleSize(boardAfter);
-  const scaleX = beforeSize.width > 0 ? afterSize.width / beforeSize.width : 1;
-  const scaleY = beforeSize.height > 0 ? afterSize.height / beforeSize.height : 1;
-
-  return pins.map((pin) => {
-    if (pin.boardId !== boardBefore.id) return pin;
-    return {
-      ...pin,
-      x: clamp(Math.round(pin.x * scaleX), 0, afterSize.width),
-      y: clamp(Math.round(pin.y * scaleY), 0, afterSize.height),
-    };
-  });
-}
-
-function getWirePathFromBends(
-  start: { x: number; y: number },
-  bends: WireBend[],
-  end: { x: number; y: number },
-) {
-  const points = [start.x, start.y];
-  for (const bend of bends) {
-    points.push(Math.round(bend.x), Math.round(bend.y));
-  }
-  points.push(end.x, end.y);
-  return points;
-}
-
-function getWireNodes(
-  start: { x: number; y: number },
-  bends: WireBend[],
-  end: { x: number; y: number },
-) {
-  return [start, ...bends.map((bend) => ({ x: bend.x, y: bend.y })), end];
-}
-
-function getDistanceToSegment(
-  point: { x: number; y: number },
-  start: { x: number; y: number },
-  end: { x: number; y: number },
-) {
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  const lengthSquared = dx * dx + dy * dy;
-
-  if (lengthSquared === 0) {
-    return Math.hypot(point.x - start.x, point.y - start.y);
-  }
-
-  const t = clamp(((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared, 0, 1);
-  const projectionX = start.x + t * dx;
-  const projectionY = start.y + t * dy;
-  return Math.hypot(point.x - projectionX, point.y - projectionY);
-}
-
-function getWirePath(a: { x: number; y: number }, b: { x: number; y: number }) {
-  const midX = Math.round((a.x + b.x) / 2);
-  return [a.x, a.y, midX, a.y, midX, b.y, b.x, b.y];
-}
-
-function getWirePathWithControl(a: { x: number; y: number }, b: { x: number; y: number }, routeX: number, routeY: number) {
-  const x = Math.round(routeX);
-  const y = Math.round(routeY);
-  return [a.x, a.y, x, a.y, x, y, b.x, y, b.x, b.y];
-}
-
-function getWireDefaultControl(a: { x: number; y: number }, b: { x: number; y: number }) {
-  return {
-    x: Math.round((a.x + b.x) / 2),
-    y: Math.round((a.y + b.y) / 2),
-  };
-}
-
-function getWirePathLength(points: number[]) {
-  let length = 0;
-  for (let index = 0; index < points.length - 2; index += 2) {
-    length += Math.hypot(points[index + 2] - points[index], points[index + 3] - points[index + 1]);
-  }
-  return length;
-}
-
-function getWireDash(style: WireLineStyle) {
-  if (style === "dashed") return [12, 8];
-  if (style === "dotted") return [3, 7];
-  return [];
-}
-
-function getWireSegments(points: number[]) {
-  const segments: Array<{ x1: number; y1: number; x2: number; y2: number; horizontal: boolean }> = [];
-  for (let index = 0; index < points.length - 2; index += 2) {
-    const x1 = points[index];
-    const y1 = points[index + 1];
-    const x2 = points[index + 2];
-    const y2 = points[index + 3];
-    segments.push({
-      x1,
-      y1,
-      x2,
-      y2,
-      horizontal: y1 === y2,
-    });
-  }
-  return segments;
-}
-
-function getWireBridgeMap(wires: Array<{ id: string; points: number[] }>) {
-  const bridges = new Map<string, Array<{ x: number; y: number }>>();
-
-  for (let i = 0; i < wires.length; i += 1) {
-    for (let j = i + 1; j < wires.length; j += 1) {
-      const wireA = wires[i];
-      const wireB = wires[j];
-      const segmentsA = getWireSegments(wireA.points);
-      const segmentsB = getWireSegments(wireB.points);
-
-      for (const segmentA of segmentsA) {
-        for (const segmentB of segmentsB) {
-          const denominator =
-            (segmentA.x1 - segmentA.x2) * (segmentB.y1 - segmentB.y2) -
-            (segmentA.y1 - segmentA.y2) * (segmentB.x1 - segmentB.x2);
-          if (Math.abs(denominator) < 0.001) continue;
-
-          const determinantA = segmentA.x1 * segmentA.y2 - segmentA.y1 * segmentA.x2;
-          const determinantB = segmentB.x1 * segmentB.y2 - segmentB.y1 * segmentB.x2;
-          const crossX =
-            (determinantA * (segmentB.x1 - segmentB.x2) - (segmentA.x1 - segmentA.x2) * determinantB) /
-            denominator;
-          const crossY =
-            (determinantA * (segmentB.y1 - segmentB.y2) - (segmentA.y1 - segmentA.y2) * determinantB) /
-            denominator;
-
-          const insideA =
-            crossX > Math.min(segmentA.x1, segmentA.x2) + 3 &&
-            crossX < Math.max(segmentA.x1, segmentA.x2) - 3 &&
-            crossY > Math.min(segmentA.y1, segmentA.y2) + 3 &&
-            crossY < Math.max(segmentA.y1, segmentA.y2) - 3;
-          const insideB =
-            crossX > Math.min(segmentB.x1, segmentB.x2) + 3 &&
-            crossX < Math.max(segmentB.x1, segmentB.x2) - 3 &&
-            crossY > Math.min(segmentB.y1, segmentB.y2) + 3 &&
-            crossY < Math.max(segmentB.y1, segmentB.y2) - 3;
-
-          if (!insideA || !insideB) continue;
-
-          bridges.set(wireA.id, [...(bridges.get(wireA.id) ?? []), { x: crossX, y: crossY }]);
-        }
-      }
-    }
-  }
-
-  return bridges;
-}
-
-function normalizeProject(candidate: unknown): Project {
-  if (!candidate || typeof candidate !== "object") return initialProject;
-
-  const raw = candidate as Partial<Project>;
-  const boards = Array.isArray(raw.boards)
-    ? raw.boards
-        .map((board) => {
-          if (!board || typeof board !== "object") return null;
-          const item = board as Partial<Board> & { width?: number; height?: number; crop?: Partial<BoardCrop> };
-          if (!item.id || !item.imageSrc) return null;
-          return {
-            id: String(item.id),
-            name: String(item.name ?? "Board"),
-            imageSrc: String(item.imageSrc),
-            x: Number(item.x ?? 0),
-            y: Number(item.y ?? 0),
-            originalWidth: Number(
-              item.originalWidth ?? item.width ?? 320,
-            ),
-            originalHeight: Number(
-              item.originalHeight ?? item.height ?? 240,
-            ),
-            scale: Number(item.scale ?? 1),
-            crop: {
-              left: Number(item.crop?.left ?? 0),
-              right: Number(item.crop?.right ?? 0),
-              top: Number(item.crop?.top ?? 0),
-              bottom: Number(item.crop?.bottom ?? 0),
-            },
-            locked: Boolean(item.locked),
-          } satisfies Board;
-        })
-        .filter((board): board is Board => Boolean(board))
-    : [];
-
-  const boardIds = new Set(boards.map((board) => board.id));
-  const pins = Array.isArray(raw.pins)
-    ? raw.pins
-        .map((pin) => {
-          if (!pin || typeof pin !== "object") return null;
-          const item = pin as Partial<Pin>;
-          if (!item.id || !item.boardId || !boardIds.has(String(item.boardId))) return null;
-          const kind = pinKinds.includes(item.kind as PinKind) ? (item.kind as PinKind) : "SIGNAL";
-          const voltage = voltages.includes(item.voltage as Voltage) ? (item.voltage as Voltage) : "N/A";
-          return {
-            id: String(item.id),
-            boardId: String(item.boardId),
-            x: Number(item.x ?? 0),
-            y: Number(item.y ?? 0),
-            label: String(item.label ?? "PIN"),
-            typeLabel: String((item as Partial<Pin> & { typeLabel?: string }).typeLabel ?? item.kind ?? "SIGNAL"),
-            networkTypeId: item.networkTypeId == null ? null : String(item.networkTypeId),
-            labelOffsetX: Number(item.labelOffsetX ?? 10),
-            labelOffsetY: Number(item.labelOffsetY ?? -8),
-            kind,
-            voltage: String(item.voltage ?? voltage),
-            maxCurrentMa: Number(item.maxCurrentMa ?? 500),
-          } satisfies Pin;
-        })
-        .filter((pin): pin is Pin => Boolean(pin))
-    : [];
-
-  const networkTypes = Array.isArray((raw as Partial<Project> & { networkTypes?: Partial<NetworkType>[] }).networkTypes)
-    ? (((raw as Partial<Project> & { networkTypes?: Partial<NetworkType>[] }).networkTypes) ?? [])
-        .map((networkType) => {
-          if (!networkType || typeof networkType !== "object") return null;
-          const baseKind = pinKinds.includes(networkType.baseKind as PinKind) ? (networkType.baseKind as PinKind) : "SIGNAL";
-          return {
-            id: String(networkType.id ?? uid("network")),
-            name: String(networkType.name ?? baseKind),
-            baseKind,
-            defaultVoltage: String(networkType.defaultVoltage ?? "N/A"),
-          } satisfies NetworkType;
-        })
-        .filter((networkType): networkType is NetworkType => Boolean(networkType))
-    : [];
-
-  const pinIds = new Set(pins.map((pin) => pin.id));
-  const wires = Array.isArray(raw.wires)
-    ? raw.wires
-        .map((wire) => {
-          if (!wire || typeof wire !== "object") return null;
-          const item = wire as Partial<Wire>;
-          if (!item.id || !item.fromPinId || !item.toPinId) return null;
-          if (!pinIds.has(String(item.fromPinId)) || !pinIds.has(String(item.toPinId))) return null;
-          return {
-            id: String(item.id),
-            fromPinId: String(item.fromPinId),
-            toPinId: String(item.toPinId),
-            color: String(item.color ?? "#6a7280"),
-            width: Number(item.width ?? 3),
-            label: String((item as Partial<Wire> & { label?: string }).label ?? ""),
-            labelFontSize: Number((item as Partial<Wire> & { labelFontSize?: number }).labelFontSize ?? 12),
-            labelOffsetX: Number((item as Partial<Wire> & { labelOffsetX?: number }).labelOffsetX ?? 8),
-            labelOffsetY: Number((item as Partial<Wire> & { labelOffsetY?: number }).labelOffsetY ?? -10),
-            bends: Array.isArray((item as Partial<Wire> & { bends?: Partial<WireBend>[] }).bends)
-              ? ((item as Partial<Wire> & { bends?: Partial<WireBend>[] }).bends ?? [])
-                  .map((bend) => {
-                    if (!bend || typeof bend !== "object") return null;
-                    return {
-                      id: String(bend.id ?? uid("bend")),
-                      x: Number(bend.x ?? 0),
-                      y: Number(bend.y ?? 0),
-                    } satisfies WireBend;
-                  })
-                  .filter((bend): bend is WireBend => Boolean(bend))
-              : [],
-            routeX: item.routeX == null ? null : Number(item.routeX),
-            routeY: item.routeY == null ? null : Number(item.routeY),
-            lineStyle:
-              item.lineStyle === "dashed" || item.lineStyle === "dotted" || item.lineStyle === "solid"
-                ? item.lineStyle
-                : "solid",
-            endStyle:
-              item.endStyle === "dot" || item.endStyle === "arrow" || item.endStyle === "none"
-                ? item.endStyle
-                : "none",
-            arrowDirection:
-              item.arrowDirection === "reverse" || item.arrowDirection === "forward"
-                ? item.arrowDirection
-                : "forward",
-            status: item.status === "error" || item.status === "warning" || item.status === "ok" ? item.status : "ok",
-            message: String(item.message ?? ""),
-          } satisfies Wire;
-        })
-        .filter((wire): wire is Wire => Boolean(wire))
-    : [];
-
-  return recomputeProject(migrateProjectGeometry({ boards, pins, wires, networkTypes }));
-}
-
-function evaluateConnection(from: Pin, to: Pin, sameBoard: boolean): Pick<Wire, "status" | "message" | "color"> {
-  if (from.id === to.id) {
-    return { status: "error", message: "同一个引脚不能自连", color: "#c62a24" };
-  }
-
-  if (sameBoard) {
-    return { status: "warning", message: "同一块板上的跨脚跳线需要人工确认", color: "#f08b1a" };
-  }
-
-  if (from.kind === "GND" || to.kind === "GND") {
-    if (from.kind === "GND" && to.kind === "GND") {
-      return { status: "ok", message: "地线连接正常", color: wireColorByKind.GND };
-    }
-    return { status: "error", message: "GND 只能连接 GND", color: "#c62a24" };
-  }
-
-  if (powerKinds.includes(from.kind) || powerKinds.includes(to.kind)) {
-    if (!powerKinds.includes(from.kind) || !powerKinds.includes(to.kind)) {
-      return { status: "error", message: "电源脚不能直接连接信号脚", color: "#c62a24" };
-    }
-    if (from.voltage !== to.voltage) {
-      return { status: "error", message: `电压冲突：${from.voltage} 不能连接 ${to.voltage}`, color: "#c62a24" };
-    }
-    return { status: "ok", message: `${from.voltage} 电源连接正常`, color: wireColorByKind[from.kind] };
-  }
-
-  if (from.kind === "UART_TX" && to.kind === "UART_TX") {
-    return { status: "warning", message: "UART 通常需要 TX 连接 RX", color: "#f08b1a" };
-  }
-
-  if (from.kind === "UART_RX" && to.kind === "UART_RX") {
-    return { status: "warning", message: "UART 通常需要 RX 连接 TX", color: "#f08b1a" };
-  }
-
-  if (
-    (from.kind === "UART_TX" && to.kind === "UART_RX") ||
-    (from.kind === "UART_RX" && to.kind === "UART_TX")
-  ) {
-    return { status: "ok", message: "UART 连接正常", color: from.kind === "UART_TX" ? wireColorByKind.UART_TX : wireColorByKind.UART_RX };
-  }
-
-  if (from.kind === to.kind) {
-    return { status: "ok", message: `${from.kind} 信号连接`, color: wireColorByKind[from.kind] };
-  }
-
-  return { status: "warning", message: `${from.kind} 到 ${to.kind} 需要人工确认`, color: "#f08b1a" };
-}
-
-function recomputeProject(project: Project): Project {
-  const pinMap = new Map(project.pins.map((pin) => [pin.id, pin]));
-  return {
-    ...project,
-    wires: project.wires.map((wire) => {
-      const from = pinMap.get(wire.fromPinId);
-      const to = pinMap.get(wire.toPinId);
-      if (!from || !to) return wire;
-      return {
-        ...wire,
-        ...evaluateConnection(from, to, from.boardId === to.boardId),
-      };
-    }),
-  };
-}
-
-function migrateProjectGeometry(project: Project): Project {
-  const boardMap = new Map(project.boards.map((board) => [board.id, board]));
-  const pinMap = new Map(project.pins.map((pin) => [pin.id, pin]));
-
-  return {
-    ...project,
-    wires: project.wires.map((wire) => {
-      if (wire.bends.length > 0) return wire;
-      const from = pinMap.get(wire.fromPinId);
-      const to = pinMap.get(wire.toPinId);
-      if (!from || !to) return { ...wire, bends: [] };
-      const fromBoard = boardMap.get(from.boardId);
-      const toBoard = boardMap.get(to.boardId);
-      if (!fromBoard || !toBoard) return { ...wire, bends: [] };
-      const a = getPinAbsolute(from, fromBoard);
-      const b = getPinAbsolute(to, toBoard);
-      const defaultControl = getWireDefaultControl(a, b);
-      const routeX = wire.routeX ?? defaultControl.x;
-      const routeY = wire.routeY ?? defaultControl.y;
-      return {
-        ...wire,
-        bends: [
-          { id: uid("bend"), x: routeX, y: a.y },
-          { id: uid("bend"), x: routeX, y: routeY },
-          { id: uid("bend"), x: b.x, y: routeY },
-        ],
-      };
-    }),
-  };
-}
-
-function getPinAbsolute(pin: Pin, board?: Board) {
-  return {
-    x: (board?.x ?? 0) + pin.x,
-    y: (board?.y ?? 0) + pin.y,
-  };
-}
-
-function BoardImage({ board }: { board: Board }) {
-  const image = useImage(board.imageSrc);
-  const visibleSize = getBoardVisibleSize(board);
-
-  if (!image) {
-    return (
-      <Rect
-        x={0}
-        y={0}
-        width={visibleSize.width}
-        height={visibleSize.height}
-        fill="#d9e0e7"
-        stroke="#718096"
-        strokeWidth={1}
-      />
-    );
-  }
-
-  return (
-    <KonvaImage
-      image={image}
-      x={0}
-      y={0}
-      width={visibleSize.width}
-      height={visibleSize.height}
-      crop={{
-        x: board.crop.left,
-        y: board.crop.top,
-        width: Math.max(24, board.originalWidth - board.crop.left - board.crop.right),
-        height: Math.max(24, board.originalHeight - board.crop.top - board.crop.bottom),
-      }}
-      cornerRadius={6}
-    />
-  );
-}
+  DEFAULT_CANVAS_GRID_SIZE,
+  DEFAULT_PIN_LABEL_FONT_FAMILY,
+  DEFAULT_PIN_LABEL_FONT_SIZE,
+  DEFAULT_PIN_SIZE,
+  EXPORT_MAX_IMAGE_SIDE,
+  EXPORT_TARGET_PIXEL_RATIO,
+  HISTORY_LIMIT,
+  STORAGE_KEY,
+  WIRE_HIT_TOLERANCE,
+  initialProject,
+  voltages,
+} from "./domain/constants";
+import { getWireBridgeMap } from "./domain/bridges";
+import {
+  clamp,
+  getBoardLocalFromAbsolute,
+  getBoardPlacement,
+  getBoardVisibleSize,
+  getPinBatchOffset,
+  getPinAbsolute,
+  normalizeRotation,
+} from "./domain/geometry";
+import { getProjectExportBounds } from "./domain/exportBounds";
+import { inferPinGroupDirection, inferPinGroupSpacing, remapPinsForBoard } from "./domain/pins";
+import { buildIssues, evaluateConnection, normalizeProject, recomputeProject } from "./domain/project";
+import {
+  createDefaultWireBends,
+  getDefaultWireAppearance,
+  getDefaultWireWidth,
+  getDistanceToSegment,
+  getDistanceToWirePath,
+  getWireDefaultControl,
+  getWireNodes,
+  getWirePathFromBends,
+} from "./domain/wires";
+import type {
+  Board,
+  IssueTarget,
+  NetworkType,
+  Pin,
+  PinBatchDirection,
+  Project,
+  ProjectIssue,
+  Severity,
+  ToolMode,
+  Wire,
+  WireBend,
+} from "./domain/types";
+import { createAssetUri, putImageAsset } from "./lib/assets";
+import { uid } from "./lib/id";
+import { exportProjectBundle as downloadProjectBundle, exportProjectJson, importProjectPayload } from "./lib/projectFiles";
+import { clearStagePanPreview, setStagePanPreview } from "./lib/stagePan";
+
+Konva.pixelRatio = 1;
+Konva.hitOnDragEnabled = false;
+Konva.dragDistance = 1;
 
 function loadProject(): Project {
   const raw = localStorage.getItem(STORAGE_KEY);
@@ -686,156 +73,13 @@ function loadProject(): Project {
   }
 }
 
-function buildIssues(project: Project): ProjectIssue[] {
-  const issues: ProjectIssue[] = [];
-  const pinsById = new Map(project.pins.map((pin) => [pin.id, pin]));
-  const boardMap = new Map(project.boards.map((board) => [board.id, board]));
-  const connectedByPin = new Map<string, Wire[]>();
-
-  for (const wire of project.wires) {
-    issues.push(
-      ...(wire.status === "ok"
-        ? []
-        : [
-            {
-              id: `wire-${wire.id}`,
-              severity: wire.status,
-              text: wire.message,
-              target: { kind: "wire", id: wire.id },
-            } satisfies ProjectIssue,
-          ]),
-    );
-
-    connectedByPin.set(wire.fromPinId, [...(connectedByPin.get(wire.fromPinId) ?? []), wire]);
-    connectedByPin.set(wire.toPinId, [...(connectedByPin.get(wire.toPinId) ?? []), wire]);
-  }
-
-  for (const pin of project.pins) {
-    const links = connectedByPin.get(pin.id) ?? [];
-    if (powerKinds.includes(pin.kind) && links.length === 0) {
-      issues.push({
-        id: `pin-power-${pin.id}`,
-        severity: "warning",
-        text: `${pin.label} 供电脚未连接`,
-        target: { kind: "pin", id: pin.id },
-      });
-    }
-
-    if ((pin.kind === "GND" || signalKinds.includes(pin.kind)) && links.length === 0) {
-      issues.push({
-        id: `pin-open-${pin.id}`,
-        severity: "warning",
-        text: `${pin.label} 未接入网络`,
-        target: { kind: "pin", id: pin.id },
-      });
-    }
-
-    if (signalKinds.includes(pin.kind) && links.length > 1) {
-      issues.push({
-        id: `pin-fanout-${pin.id}`,
-        severity: "warning",
-        text: `${pin.label} 连到了 ${links.length} 条线，请确认是否允许分叉`,
-        target: { kind: "pin", id: pin.id },
-      });
-    }
-  }
-
-  for (const networkType of project.networkTypes) {
-    const members = project.pins.filter((pin) => pin.networkTypeId === networkType.id);
-    if (members.length < 2) continue;
-    for (let index = 0; index < members.length; index += 1) {
-      for (let inner = index + 1; inner < members.length; inner += 1) {
-        const a = members[index];
-        const b = members[inner];
-        const physicallyConnected = project.wires.some(
-          (wire) =>
-            (wire.fromPinId === a.id && wire.toPinId === b.id) ||
-            (wire.fromPinId === b.id && wire.toPinId === a.id),
-        );
-        if (!physicallyConnected) {
-          issues.push({
-            id: `network-open-${networkType.id}-${a.id}-${b.id}`,
-            severity: "warning",
-            text: `${networkType.name}: ${a.label} 与 ${b.label} 同网络但未物理连通`,
-            target: { kind: "pin", id: a.id },
-          });
-        }
-      }
-    }
-  }
-
-  for (const board of project.boards) {
-    const boardPins = project.pins.filter((pin) => pin.boardId === board.id);
-    if (boardPins.length === 0) {
-      issues.push({
-        id: `board-empty-${board.id}`,
-        severity: "warning",
-        text: `${board.name} 还没有定义任何引脚`,
-        target: { kind: "board", id: board.id },
-      });
-      continue;
-    }
-
-    const boardLinks = boardPins.flatMap((pin) => connectedByPin.get(pin.id) ?? []);
-    const connectedGround = boardPins.some((pin) => pin.kind === "GND" && (connectedByPin.get(pin.id)?.length ?? 0) > 0);
-    const connectedPower = boardPins.some((pin) => powerKinds.includes(pin.kind) && (connectedByPin.get(pin.id)?.length ?? 0) > 0);
-    const hasSignalLink = boardPins.some((pin) => signalKinds.includes(pin.kind) && (connectedByPin.get(pin.id)?.length ?? 0) > 0);
-
-    if (boardPins.some((pin) => powerKinds.includes(pin.kind)) && !connectedPower) {
-      issues.push({
-        id: `board-power-${board.id}`,
-        severity: "warning",
-        text: `${board.name} 没有接入供电`,
-        target: { kind: "board", id: board.id },
-      });
-    }
-
-    if (boardPins.some((pin) => pin.kind === "GND") && !connectedGround) {
-      issues.push({
-        id: `board-ground-${board.id}`,
-        severity: "warning",
-        text: `${board.name} 没有接入地线`,
-        target: { kind: "board", id: board.id },
-      });
-    }
-
-    if (hasSignalLink && (!connectedPower || !connectedGround)) {
-      issues.push({
-        id: `board-incomplete-${board.id}`,
-        severity: "error",
-        text: `${board.name} 已接信号但供电或地线不完整`,
-        target: { kind: "board", id: board.id },
-      });
-    }
-
-    const foreignBoardIds = new Set<string>();
-    for (const wire of boardLinks) {
-      const otherPinId = wire.fromPinId === boardPins.find((pin) => pin.id === wire.fromPinId)?.id ? wire.toPinId : wire.fromPinId;
-      const otherPin = pinsById.get(otherPinId);
-      if (otherPin && otherPin.boardId !== board.id) {
-        foreignBoardIds.add(otherPin.boardId);
-      }
-    }
-
-    if (foreignBoardIds.size === 0 && project.boards.length > 1) {
-      issues.push({
-        id: `board-isolated-${board.id}`,
-        severity: "warning",
-        text: `${board.name} 还没有和其他板建立连接`,
-        target: { kind: "board", id: board.id },
-      });
-    }
-
-    if (!boardMap.has(board.id)) continue;
-  }
-
-  return issues;
-}
-
 export default function App() {
   const [project, setProject] = useState<Project>(() => loadProject());
+  const [undoStack, setUndoStack] = useState<Project[]>([]);
+  const [redoStack, setRedoStack] = useState<Project[]>([]);
   const [mode, setMode] = useState<ToolMode>("select");
   const [selectedPinId, setSelectedPinId] = useState<string | null>(null);
+  const [selectedPinGroupId, setSelectedPinGroupId] = useState<string | null>(null);
   const [selectedWireId, setSelectedWireId] = useState<string | null>(null);
   const [selectedBoardId, setSelectedBoardId] = useState<string | null>(null);
   const [wireStartPinId, setWireStartPinId] = useState<string | null>(null);
@@ -843,11 +87,35 @@ export default function App() {
   const [scale, setScale] = useState(1);
   const [stagePosition, setStagePosition] = useState({ x: 0, y: 0 });
   const [pinGuide, setPinGuide] = useState<{ x: number; y: number } | null>(null);
+  const [isDraggingProjectItem, setIsDraggingProjectItem] = useState(false);
+  const [showGrid, setShowGrid] = useState(true);
+  const [gridSize, setGridSize] = useState(DEFAULT_CANVAS_GRID_SIZE);
+  const [isViewMenuOpen, setIsViewMenuOpen] = useState(false);
+  const [isPinMenuOpen, setIsPinMenuOpen] = useState(false);
+  const [isCleanExporting, setIsCleanExporting] = useState(false);
+  const [pinBatchCount, setPinBatchCount] = useState(1);
+  const [pinBatchSpacing, setPinBatchSpacing] = useState(24);
+  const [pinBatchDirection, setPinBatchDirection] = useState<PinBatchDirection>("right");
+  const [defaultPinSize, setDefaultPinSize] = useState(DEFAULT_PIN_SIZE);
   const stageWrapRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<Konva.Stage | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const projectInputRef = useRef<HTMLInputElement | null>(null);
-  const wireRouteDragRef = useRef<Record<string, number>>({});
+  const canvasPanStartRef = useRef<{ clientX: number; clientY: number; originX: number; originY: number } | null>(null);
+  const isPanningCanvasRef = useRef(false);
+  const canvasPanFrameRef = useRef<number | null>(null);
+  const pendingCanvasPanPositionRef = useRef<{ x: number; y: number } | null>(null);
+  const pendingProjectFrameRef = useRef<number | null>(null);
+  const pendingProjectUpdateRef = useRef<((current: Project) => Project) | null>(null);
+  const pinGroupDragRef = useRef<Record<string, { x: number; y: number }>>({});
+  const projectRef = useRef(project);
+  const undoStackRef = useRef<Project[]>([]);
+  const redoStackRef = useRef<Project[]>([]);
+  const historyProjectRef = useRef(project);
+  const skipNextHistoryRef = useRef(true);
+  const isApplyingHistoryRef = useRef(false);
+  const issuesRef = useRef<ProjectIssue[]>([]);
+  const pinGroupsRef = useRef<Array<{ id: string; pins: Pin[]; x: number; y: number; width: number; height: number }>>([]);
 
   useEffect(() => {
     const update = () => {
@@ -861,18 +129,189 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(project));
+    projectRef.current = project;
+    let idleSaveId: number | null = null;
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    const saveTimer = window.setTimeout(() => {
+      const saveProject = () => {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(projectRef.current));
+      };
+
+      if (idleWindow.requestIdleCallback) {
+        idleSaveId = idleWindow.requestIdleCallback(saveProject, { timeout: 4000 });
+      } else {
+        idleSaveId = window.setTimeout(saveProject, 0);
+      }
+    }, 1500);
+
+    return () => {
+      window.clearTimeout(saveTimer);
+      if (idleSaveId == null) return;
+      if (idleWindow.cancelIdleCallback) {
+        idleWindow.cancelIdleCallback(idleSaveId);
+      } else {
+        window.clearTimeout(idleSaveId);
+      }
+    };
   }, [project]);
+
+  useEffect(() => {
+    undoStackRef.current = undoStack;
+  }, [undoStack]);
+
+  useEffect(() => {
+    redoStackRef.current = redoStack;
+  }, [redoStack]);
+
+  useEffect(() => {
+    const previousProject = historyProjectRef.current;
+    if (skipNextHistoryRef.current) {
+      skipNextHistoryRef.current = false;
+      historyProjectRef.current = project;
+      return;
+    }
+
+    if (isApplyingHistoryRef.current) {
+      isApplyingHistoryRef.current = false;
+      historyProjectRef.current = project;
+      return;
+    }
+
+    if (previousProject === project) {
+      historyProjectRef.current = project;
+      return;
+    }
+
+    setUndoStack((current) => {
+      const nextUndoStack = [...current.slice(Math.max(0, current.length - HISTORY_LIMIT + 1)), previousProject];
+      undoStackRef.current = nextUndoStack;
+      return nextUndoStack;
+    });
+    redoStackRef.current = [];
+    setRedoStack([]);
+    historyProjectRef.current = project;
+  }, [project]);
+
+  useEffect(() => {
+    const saveBeforeUnload = () => {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(projectRef.current));
+    };
+    window.addEventListener("beforeunload", saveBeforeUnload);
+    return () => window.removeEventListener("beforeunload", saveBeforeUnload);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (canvasPanFrameRef.current != null) {
+        window.cancelAnimationFrame(canvasPanFrameRef.current);
+      }
+      if (pendingProjectFrameRef.current != null) {
+        window.cancelAnimationFrame(pendingProjectFrameRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const isModifierPressed = event.ctrlKey || event.metaKey;
+      if (isModifierPressed && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        if (event.shiftKey) {
+          redoProject();
+        } else {
+          undoProject();
+        }
+        return;
+      }
+      if (isModifierPressed && event.key.toLowerCase() === "y") {
+        event.preventDefault();
+        redoProject();
+        return;
+      }
+
+      if (event.key !== "Escape") return;
+      if (canvasPanFrameRef.current != null) {
+        window.cancelAnimationFrame(canvasPanFrameRef.current);
+        canvasPanFrameRef.current = null;
+      }
+      pendingCanvasPanPositionRef.current = null;
+      clearStagePanPreview(stageRef.current);
+      canvasPanStartRef.current = null;
+      isPanningCanvasRef.current = false;
+      setIsViewMenuOpen(false);
+      setIsPinMenuOpen(false);
+      resetSelections();
+      setMode("select");
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   const boardsById = useMemo(() => new Map(project.boards.map((board) => [board.id, board])), [project.boards]);
   const pinsById = useMemo(() => new Map(project.pins.map((pin) => [pin.id, pin])), [project.pins]);
   const networkTypesById = useMemo(() => new Map(project.networkTypes.map((networkType) => [networkType.id, networkType])), [project.networkTypes]);
   const selectedPin = selectedPinId ? pinsById.get(selectedPinId) ?? null : null;
+  const selectedPinGroup = selectedPinGroupId
+    ? project.pins.filter((pin) => pin.groupId === selectedPinGroupId)
+    : [];
+  const pinGroups = useMemo(() => {
+    if (isDraggingProjectItem) return pinGroupsRef.current;
+    const groups = new Map<string, Pin[]>();
+    for (const pin of project.pins) {
+      if (!pin.groupId) continue;
+      groups.set(pin.groupId, [...(groups.get(pin.groupId) ?? []), pin]);
+    }
+
+    const nextPinGroups = Array.from(groups.entries())
+      .filter(([, pins]) => pins.length > 1)
+      .flatMap(([groupId, pins]) => {
+        const points = pins.flatMap((pin) => {
+          const board = boardsById.get(pin.boardId);
+          if (!board) return [];
+          return [getPinAbsolute(pin, board)];
+        });
+        if (points.length === 0) return [];
+        const minX = Math.min(...points.map((point) => point.x));
+        const minY = Math.min(...points.map((point) => point.y));
+        const maxX = Math.max(...points.map((point) => point.x));
+        const maxY = Math.max(...points.map((point) => point.y));
+        const padding = Math.max(18, Math.max(...pins.map((pin) => pin.size ?? DEFAULT_PIN_SIZE)) + 12);
+
+        return [{
+          id: groupId,
+          pins,
+          x: minX - padding,
+          y: minY - padding,
+          width: maxX - minX + padding * 2,
+          height: maxY - minY + padding * 2,
+        }];
+      });
+    pinGroupsRef.current = nextPinGroups;
+    return nextPinGroups;
+  }, [boardsById, isDraggingProjectItem, project.pins]);
+  const selectedPinGroupInfo = selectedPinGroupId
+    ? pinGroups.find((group) => group.id === selectedPinGroupId) ?? null
+    : null;
+  const selectedPinGroupDirection = inferPinGroupDirection(selectedPinGroup);
+  const selectedPinGroupSpacing = inferPinGroupSpacing(selectedPinGroup);
+  const selectedPinGroupSize = selectedPinGroup[0]?.size ?? DEFAULT_PIN_SIZE;
+  const selectedPinGroupLabelColor = selectedPinGroup[0]?.labelColor ?? "#111827";
+  const selectedPinGroupLabelFontSize = selectedPinGroup[0]?.labelFontSize ?? DEFAULT_PIN_LABEL_FONT_SIZE;
+  const selectedPinGroupLabelFontFamily = selectedPinGroup[0]?.labelFontFamily ?? DEFAULT_PIN_LABEL_FONT_FAMILY;
   const selectedWire = selectedWireId ? project.wires.find((wire) => wire.id === selectedWireId) ?? null : null;
   const selectedBoard = selectedBoardId ? boardsById.get(selectedBoardId) ?? null : null;
-  const issues = useMemo(() => buildIssues(project), [project]);
+  const issues = useMemo(() => {
+    if (isDraggingProjectItem) return issuesRef.current;
+    const nextIssues = buildIssues(project);
+    issuesRef.current = nextIssues;
+    return nextIssues;
+  }, [isDraggingProjectItem, project]);
   const wireGeometry = useMemo(() => {
-    return project.wires.flatMap((wire) => {
+    return project.wires.flatMap((wire, order) => {
       const from = pinsById.get(wire.fromPinId);
       const to = pinsById.get(wire.toPinId);
       if (!from) return [];
@@ -884,12 +323,28 @@ export default function App() {
       const b = getPinAbsolute(to, toBoard);
       return [{
         id: wire.id,
+        width: wire.width,
+        order,
         points: getWirePathFromBends(a, wire.bends, b),
       }];
     });
   }, [boardsById, pinsById, project.wires]);
-  const wireBridgeMap = useMemo(() => getWireBridgeMap(wireGeometry), [wireGeometry]);
+  const wireBridgeMap = useMemo(
+    () => (isDraggingProjectItem ? new Map<string, Array<{ x: number; y: number }>>() : getWireBridgeMap(wireGeometry)),
+    [isDraggingProjectItem, wireGeometry],
+  );
+  const renderedWires = useMemo(() => {
+    return [...project.wires].sort((left, right) => {
+      const leftBridgeCount = wireBridgeMap.get(left.id)?.length ?? 0;
+      const rightBridgeCount = wireBridgeMap.get(right.id)?.length ?? 0;
+      if (left.id === selectedWireId) return 1;
+      if (right.id === selectedWireId) return -1;
+      if (leftBridgeCount !== rightBridgeCount) return leftBridgeCount - rightBridgeCount;
+      return project.wires.indexOf(left) - project.wires.indexOf(right);
+    });
+  }, [project.wires, selectedWireId, wireBridgeMap]);
   const logicalNetworkLinks = useMemo(() => {
+    if (isDraggingProjectItem) return [];
     const links: Array<{ id: string; from: { x: number; y: number }; to: { x: number; y: number }; name: string }> = [];
     const physicallyConnectedPairs = new Set(
       project.wires.flatMap((wire) => [
@@ -919,12 +374,112 @@ export default function App() {
     }
 
     return links;
-  }, [boardsById, project.networkTypes, project.pins, project.wires]);
+  }, [boardsById, isDraggingProjectItem, project.networkTypes, project.pins, project.wires]);
+  const projectExportBounds = useMemo(
+    () => (isDraggingProjectItem ? null : getProjectExportBounds(project)),
+    [isDraggingProjectItem, project],
+  );
+  const drawingBounds = useMemo(() => {
+    const visibleX = -stagePosition.x / scale;
+    const visibleY = -stagePosition.y / scale;
+    const visibleWidth = stageSize.width / scale;
+    const visibleHeight = stageSize.height / scale;
+    const minX = Math.floor(Math.min(0, visibleX, projectExportBounds?.x ?? 0) / gridSize) * gridSize;
+    const minY = Math.floor(Math.min(0, visibleY, projectExportBounds?.y ?? 0) / gridSize) * gridSize;
+    const maxX =
+      Math.ceil(
+        Math.max(visibleX + visibleWidth, (projectExportBounds?.x ?? 0) + (projectExportBounds?.width ?? 0), gridSize * 42) /
+          gridSize,
+      ) * gridSize;
+    const maxY =
+      Math.ceil(
+        Math.max(visibleY + visibleHeight, (projectExportBounds?.y ?? 0) + (projectExportBounds?.height ?? 0), gridSize * 28) /
+          gridSize,
+      ) * gridSize;
+
+    return {
+      x: minX,
+      y: minY,
+      width: Math.max(gridSize, maxX - minX),
+      height: Math.max(gridSize, maxY - minY),
+    };
+  }, [gridSize, projectExportBounds, scale, stagePosition.x, stagePosition.y, stageSize.height, stageSize.width]);
+
+  function scheduleProjectUpdate(updater: (current: Project) => Project) {
+    pendingProjectUpdateRef.current = updater;
+    if (pendingProjectFrameRef.current != null) return;
+
+    pendingProjectFrameRef.current = window.requestAnimationFrame(() => {
+      const pending = pendingProjectUpdateRef.current;
+      pendingProjectUpdateRef.current = null;
+      pendingProjectFrameRef.current = null;
+      if (!pending) return;
+      setProject(pending);
+    });
+  }
+
+  function flushProjectUpdate() {
+    if (pendingProjectFrameRef.current != null) {
+      window.cancelAnimationFrame(pendingProjectFrameRef.current);
+      pendingProjectFrameRef.current = null;
+    }
+    const pending = pendingProjectUpdateRef.current;
+    pendingProjectUpdateRef.current = null;
+    if (pending) {
+      setProject(pending);
+    }
+  }
+
+  function undoProject() {
+    flushProjectUpdate();
+    const currentUndoStack = undoStackRef.current;
+    if (currentUndoStack.length === 0) return;
+    const previousProject = currentUndoStack[currentUndoStack.length - 1];
+    const currentProject = projectRef.current;
+    const nextUndoStack = currentUndoStack.slice(0, -1);
+    const nextRedoStack = [...redoStackRef.current.slice(Math.max(0, redoStackRef.current.length - HISTORY_LIMIT + 1)), currentProject];
+    isApplyingHistoryRef.current = true;
+    undoStackRef.current = nextUndoStack;
+    redoStackRef.current = nextRedoStack;
+    setUndoStack(nextUndoStack);
+    setRedoStack(nextRedoStack);
+    setProject(previousProject);
+    resetSelections();
+  }
+
+  function redoProject() {
+    flushProjectUpdate();
+    const currentRedoStack = redoStackRef.current;
+    if (currentRedoStack.length === 0) return;
+    const nextProject = currentRedoStack[currentRedoStack.length - 1];
+    const currentProject = projectRef.current;
+    const nextRedoStack = currentRedoStack.slice(0, -1);
+    const nextUndoStack = [...undoStackRef.current.slice(Math.max(0, undoStackRef.current.length - HISTORY_LIMIT + 1)), currentProject];
+    isApplyingHistoryRef.current = true;
+    redoStackRef.current = nextRedoStack;
+    undoStackRef.current = nextUndoStack;
+    setRedoStack(nextRedoStack);
+    setUndoStack(nextUndoStack);
+    setProject(nextProject);
+    resetSelections();
+  }
+
+  function replaceProject(nextProject: Project) {
+    skipNextHistoryRef.current = true;
+    historyProjectRef.current = nextProject;
+    undoStackRef.current = [];
+    redoStackRef.current = [];
+    setUndoStack([]);
+    setRedoStack([]);
+    setProject(nextProject);
+    resetSelections();
+  }
 
   function focusTarget(target: IssueTarget) {
     if (target.kind === "wire") {
       setSelectedWireId(target.id);
       setSelectedPinId(null);
+      setSelectedPinGroupId(null);
       setSelectedBoardId(null);
       return;
     }
@@ -932,6 +487,7 @@ export default function App() {
     if (target.kind === "pin") {
       const pin = pinsById.get(target.id);
       setSelectedPinId(target.id);
+      setSelectedPinGroupId(null);
       setSelectedWireId(null);
       setSelectedBoardId(pin?.boardId ?? null);
       return;
@@ -939,11 +495,13 @@ export default function App() {
 
     setSelectedBoardId(target.id);
     setSelectedPinId(null);
+    setSelectedPinGroupId(null);
     setSelectedWireId(null);
   }
 
   function resetSelections() {
     setSelectedPinId(null);
+    setSelectedPinGroupId(null);
     setSelectedWireId(null);
     setSelectedBoardId(null);
     setWireStartPinId(null);
@@ -958,8 +516,16 @@ export default function App() {
 
     for (const [fileIndex, file] of files.entries()) {
       const reader = new FileReader();
-      reader.onload = () => {
+      reader.onload = async () => {
         const src = String(reader.result);
+        const assetId = uid("image");
+        let imageSrc = createAssetUri(assetId);
+        try {
+          await putImageAsset(assetId, src);
+        } catch {
+          window.alert("图片资源保存失败，将以内嵌方式加入项目。");
+          imageSrc = src;
+        }
         const image = new Image();
         image.onload = () => {
           const maxWidth = 460;
@@ -967,10 +533,11 @@ export default function App() {
           const boardBase = {
             id: uid("board"),
             name: file.name.replace(/\.[^.]+$/, "") || "Board",
-            imageSrc: src,
+            imageSrc,
             originalWidth: image.width,
             originalHeight: image.height,
             scale: ratio,
+            rotation: 0,
             crop: { left: 0, right: 0, top: 0, bottom: 0 },
             locked: false,
           };
@@ -999,13 +566,16 @@ export default function App() {
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
         const parsed = JSON.parse(String(reader.result));
-        setProject(normalizeProject(parsed));
-        resetSelections();
+        const result = await importProjectPayload(parsed);
+        replaceProject(result.project);
+        if (result.failedAssetCount > 0) {
+          window.alert(`项目已导入，但有 ${result.failedAssetCount} 个图片资源没有写入本地缓存。`);
+        }
       } catch {
-        window.alert("项目文件无法解析，请确认它是 AeroWire 导出的 JSON。");
+        window.alert("项目文件无法解析，请确认它是 AeroWire 导出的 JSON 或 .awire 项目包。");
       }
     };
     reader.readAsText(file);
@@ -1015,54 +585,147 @@ export default function App() {
   function handleStagePointerDown(event: Konva.KonvaEventObject<MouseEvent>) {
     const stage = event.target.getStage();
     if (!stage || event.target !== stage) return;
-    resetSelections();
+    pendingCanvasPanPositionRef.current = null;
+    clearStagePanPreview(stage);
+
+    if (mode !== "select") {
+      resetSelections();
+      setMode("select");
+      return;
+    }
+
+    const stagePositionNow = stage.position();
+    canvasPanStartRef.current = {
+      clientX: event.evt.clientX,
+      clientY: event.evt.clientY,
+      originX: stagePositionNow.x,
+      originY: stagePositionNow.y,
+    };
+    isPanningCanvasRef.current = false;
   }
 
-  function handleCanvasDragStart(event: Konva.KonvaEventObject<DragEvent>) {
+  function handleStagePointerMove(event: Konva.KonvaEventObject<MouseEvent>) {
+    if (!canvasPanStartRef.current || mode !== "select") return;
     const stage = event.target.getStage();
     if (!stage) return;
-    if (event.target !== stage) {
-      stage.stopDrag();
+
+    const deltaX = event.evt.clientX - canvasPanStartRef.current.clientX;
+    const deltaY = event.evt.clientY - canvasPanStartRef.current.clientY;
+    if (!isPanningCanvasRef.current && Math.hypot(deltaX, deltaY) < 4) return;
+
+    isPanningCanvasRef.current = true;
+    pendingCanvasPanPositionRef.current = {
+      x: canvasPanStartRef.current.originX + deltaX,
+      y: canvasPanStartRef.current.originY + deltaY,
+    };
+
+    if (canvasPanFrameRef.current != null) return;
+    canvasPanFrameRef.current = window.requestAnimationFrame(() => {
+      canvasPanFrameRef.current = null;
+      const nextPosition = pendingCanvasPanPositionRef.current;
+      const panStart = canvasPanStartRef.current;
+      if (!nextPosition) return;
+      if (!panStart) return;
+      setStagePanPreview(
+        stage,
+        nextPosition.x - panStart.originX,
+        nextPosition.y - panStart.originY,
+      );
+    });
+  }
+
+  function handleStagePointerUp(event: Konva.KonvaEventObject<MouseEvent>) {
+    const stage = event.target.getStage();
+    if (stage && isPanningCanvasRef.current) {
+      if (canvasPanFrameRef.current != null) {
+        window.cancelAnimationFrame(canvasPanFrameRef.current);
+        canvasPanFrameRef.current = null;
+      }
+      const nextPosition = pendingCanvasPanPositionRef.current ?? stage.position();
+      pendingCanvasPanPositionRef.current = null;
+      clearStagePanPreview(stage);
+      stage.position(nextPosition);
+      stage.batchDraw();
+      setStagePosition({ x: nextPosition.x, y: nextPosition.y });
+    } else if (stage && event.target === stage) {
+      resetSelections();
+      setMode("select");
     }
+    canvasPanStartRef.current = null;
+    isPanningCanvasRef.current = false;
+  }
+
+  function handleStagePointerLeave(event: Konva.KonvaEventObject<MouseEvent>) {
+    const stage = event.target.getStage();
+    if (stage && isPanningCanvasRef.current) {
+      if (canvasPanFrameRef.current != null) {
+        window.cancelAnimationFrame(canvasPanFrameRef.current);
+        canvasPanFrameRef.current = null;
+      }
+      const nextPosition = pendingCanvasPanPositionRef.current ?? stage.position();
+      pendingCanvasPanPositionRef.current = null;
+      clearStagePanPreview(stage);
+      stage.position(nextPosition);
+      stage.batchDraw();
+      setStagePosition({ x: nextPosition.x, y: nextPosition.y });
+    }
+    canvasPanStartRef.current = null;
+    isPanningCanvasRef.current = false;
   }
 
   function handleBoardClick(event: Konva.KonvaEventObject<MouseEvent>, board: Board) {
     if (mode === "pin") {
-      const group = event.currentTarget;
-      const pointer = group.getRelativePointerPosition();
-      if (!pointer) return;
+      const canvasPoint = getCanvasPointFromEvent(event);
+      if (!canvasPoint) return;
+      const pointer = getBoardLocalFromAbsolute(board, canvasPoint);
       const visibleSize = getBoardVisibleSize(board);
 
-      const pin: Pin = {
-        id: uid("pin"),
-        boardId: board.id,
-        x: Math.round(Math.max(0, Math.min(visibleSize.width, pointer.x))),
-        y: Math.round(Math.max(0, Math.min(visibleSize.height, pointer.y))),
-        label: `P${project.pins.length + 1}`,
-        typeLabel: "SIGNAL",
-        networkTypeId: null,
-        labelOffsetX: 10,
-        labelOffsetY: -8,
-        kind: "SIGNAL",
-        voltage: "N/A",
-        maxCurrentMa: 500,
-      };
+      const count = clamp(Math.round(pinBatchCount), 1, 64);
+      const spacing = clamp(Math.round(pinBatchSpacing), 1, 200);
+      const groupId = count > 1 ? uid("pin_group") : null;
+      const pinsToAdd: Pin[] = Array.from({ length: count }).map((_, index) => {
+        const offset = getPinBatchOffset(pinBatchDirection, index, spacing);
+        return {
+          id: uid("pin"),
+          boardId: board.id,
+          x: Math.round(Math.max(0, Math.min(visibleSize.width, pointer.x + offset.x))),
+          y: Math.round(Math.max(0, Math.min(visibleSize.height, pointer.y + offset.y))),
+          groupId,
+          size: defaultPinSize,
+          label: `P${project.pins.length + index + 1}`,
+          labelColor: "#111827",
+          labelFontSize: DEFAULT_PIN_LABEL_FONT_SIZE,
+          labelFontFamily: DEFAULT_PIN_LABEL_FONT_FAMILY,
+          typeLabel: "SIGNAL",
+          networkTypeId: null,
+          labelOffsetX: 10,
+          labelOffsetY: -8,
+          kind: "SIGNAL",
+          voltage: "N/A",
+          maxCurrentMa: 500,
+        };
+      });
 
-      setProject((current) => ({ ...current, pins: [...current.pins, pin] }));
-      setSelectedPinId(pin.id);
-      setSelectedBoardId(board.id);
+      setProject((current) => ({ ...current, pins: [...current.pins, ...pinsToAdd] }));
+      setSelectedPinId(groupId ? null : pinsToAdd[0]?.id ?? null);
+      setSelectedPinGroupId(groupId);
+      setSelectedBoardId(groupId ? null : board.id);
       setSelectedWireId(null);
+      setMode("select");
+      setIsPinMenuOpen(false);
       return;
     }
 
     setSelectedBoardId(board.id);
     setSelectedPinId(null);
+    setSelectedPinGroupId(null);
     setSelectedWireId(null);
   }
 
   function handlePinClick(event: Konva.KonvaEventObject<MouseEvent>, pin: Pin) {
     event.cancelBubble = true;
     setSelectedPinId(pin.id);
+    setSelectedPinGroupId(null);
     setSelectedBoardId(pin.boardId);
     setSelectedWireId(null);
 
@@ -1116,6 +779,7 @@ export default function App() {
     setProject((current) => ({ ...current, wires: [...current.wires, wire] }));
     setSelectedWireId(wire.id);
     setWireStartPinId(null);
+    setMode("select");
   }
 
   function renamePin(pin: Pin) {
@@ -1124,11 +788,148 @@ export default function App() {
     updatePinById(pin.id, { label: nextLabel.trim() || pin.label });
   }
 
+  function getCanvasPointFromEvent(event: Konva.KonvaEventObject<MouseEvent>) {
+    const stage = event.target.getStage();
+    const pointer = stage?.getPointerPosition();
+    if (!pointer) return null;
+
+    return {
+      x: (pointer.x - stagePosition.x) / scale,
+      y: (pointer.y - stagePosition.y) / scale,
+    };
+  }
+
+  function getWireHitCandidates(point: { x: number; y: number }) {
+    return project.wires
+      .flatMap((wire, order) => {
+        const from = pinsById.get(wire.fromPinId);
+        const to = pinsById.get(wire.toPinId);
+        const fromBoard = from ? boardsById.get(from.boardId) : null;
+        const toBoard = to ? boardsById.get(to.boardId) : null;
+        if (!from || !to || !fromBoard || !toBoard) return [];
+        const points = getWirePathFromBends(getPinAbsolute(from, fromBoard), wire.bends, getPinAbsolute(to, toBoard));
+        const distance = getDistanceToWirePath(point, points);
+        const tolerance = Math.max(WIRE_HIT_TOLERANCE + 10, wire.width + 16);
+        if (distance > tolerance) return [];
+        return [{ id: wire.id, distance, order, bridgeCount: wireBridgeMap.get(wire.id)?.length ?? 0 }];
+      })
+      .sort((left, right) => {
+        if (Math.abs(left.distance - right.distance) > 2) return left.distance - right.distance;
+        if (left.bridgeCount !== right.bridgeCount) return right.bridgeCount - left.bridgeCount;
+        return right.order - left.order;
+      });
+  }
+
   function handleWireClick(event: Konva.KonvaEventObject<MouseEvent>, wireId: string) {
     event.cancelBubble = true;
+    const canvasPoint = getCanvasPointFromEvent(event);
+    if (!canvasPoint) {
+      setSelectedWireId(wireId);
+      setSelectedPinId(null);
+      setSelectedPinGroupId(null);
+      setSelectedBoardId(null);
+      return;
+    }
+
+    const candidates = getWireHitCandidates(canvasPoint);
+    const selectedCandidateIndex = selectedWireId
+      ? candidates.findIndex((candidate) => candidate.id === selectedWireId)
+      : -1;
+    const nextWireId =
+      selectedCandidateIndex >= 0 && candidates.length > 1
+        ? candidates[(selectedCandidateIndex + 1) % candidates.length].id
+        : candidates[0]?.id ?? wireId;
+
+    setSelectedWireId(nextWireId);
+    setSelectedPinId(null);
+    setSelectedPinGroupId(null);
+    setSelectedBoardId(null);
+  }
+
+  function handleWireDoubleClick(event: Konva.KonvaEventObject<MouseEvent>, wireId: string) {
+    event.cancelBubble = true;
+    const canvasPoint = getCanvasPointFromEvent(event);
+    if (!canvasPoint) return;
+    const candidates = getWireHitCandidates(canvasPoint);
+    const targetWireId =
+      selectedWireId && candidates.some((candidate) => candidate.id === selectedWireId)
+        ? selectedWireId
+        : candidates[0]?.id ?? wireId;
+
+    setSelectedWireId(targetWireId);
+    setSelectedPinId(null);
+    setSelectedPinGroupId(null);
+    setSelectedBoardId(null);
+    addWireBend(targetWireId, canvasPoint.x, canvasPoint.y);
+  }
+
+  function selectWireOnly(wireId: string) {
     setSelectedWireId(wireId);
     setSelectedPinId(null);
+    setSelectedPinGroupId(null);
     setSelectedBoardId(null);
+  }
+
+  function commitBoardDrag(boardId: string, position: { x: number; y: number }) {
+    setProject((current) => ({
+      ...current,
+      boards: current.boards.map((item) => (item.id === boardId ? { ...item, ...position } : item)),
+    }));
+    setSelectedBoardId(boardId);
+    setSelectedPinId(null);
+    setSelectedPinGroupId(null);
+    setSelectedWireId(null);
+  }
+
+  function commitWireLabelDrag(wireId: string, labelOffsetX: number, labelOffsetY: number) {
+    setProject((current) => ({
+      ...current,
+      wires: current.wires.map((item) =>
+        item.id === wireId
+          ? {
+              ...item,
+              labelOffsetX,
+              labelOffsetY,
+            }
+          : item,
+      ),
+    }));
+    selectWireOnly(wireId);
+  }
+
+  function commitPinLabelDrag(pin: Pin, labelOffsetX: number, labelOffsetY: number) {
+    setProject((current) => ({
+      ...current,
+      pins: current.pins.map((item) =>
+        item.id === pin.id
+          ? {
+              ...item,
+              labelOffsetX,
+              labelOffsetY,
+            }
+          : item,
+      ),
+    }));
+    setSelectedPinId(pin.id);
+    setSelectedPinGroupId(null);
+    setSelectedBoardId(pin.boardId);
+    setSelectedWireId(null);
+  }
+
+  function handlePinDragCommit(pin: Pin, board: Board, absolutePoint: { x: number; y: number }) {
+    commitPinDrag(pin, board, absolutePoint);
+    setSelectedPinId(pin.id);
+    setSelectedPinGroupId(null);
+    setSelectedBoardId(pin.boardId);
+    setSelectedWireId(null);
+  }
+
+  function startProjectItemDrag() {
+    setIsDraggingProjectItem(true);
+  }
+
+  function finishProjectItemDrag() {
+    setIsDraggingProjectItem(false);
   }
 
   function updatePin(patch: Partial<Pin>) {
@@ -1143,6 +944,97 @@ export default function App() {
         pins: current.pins.map((pin) => (pin.id === pinId ? { ...pin, ...patch } : pin)),
       }),
     );
+  }
+
+  function selectPinGroup(groupId: string) {
+    setSelectedPinGroupId(groupId);
+    setSelectedPinId(null);
+    setSelectedWireId(null);
+    setSelectedBoardId(null);
+  }
+
+  function movePinGroup(groupId: string, deltaX: number, deltaY: number) {
+    setProject((current) => ({
+      ...current,
+      pins: current.pins.map((pin) => {
+        if (pin.groupId !== groupId) return pin;
+        const board = current.boards.find((item) => item.id === pin.boardId);
+        if (!board) {
+          return {
+            ...pin,
+            x: Math.round(pin.x + deltaX),
+            y: Math.round(pin.y + deltaY),
+          };
+        }
+        const absolute = getPinAbsolute(pin, board);
+        const nextLocal = getBoardLocalFromAbsolute(board, {
+          x: absolute.x + deltaX,
+          y: absolute.y + deltaY,
+        });
+        return {
+          ...pin,
+          x: Math.round(nextLocal.x),
+          y: Math.round(nextLocal.y),
+        };
+      }),
+    }));
+  }
+
+  function updatePinGroup(
+    groupId: string,
+    patch: Partial<Pick<Pin, "size" | "labelColor" | "labelFontSize" | "labelFontFamily">>,
+  ) {
+    setProject((current) => ({
+      ...current,
+      pins: current.pins.map((pin) => (pin.groupId === groupId ? { ...pin, ...patch } : pin)),
+    }));
+  }
+
+  function updatePinGroupLayout(groupId: string, direction: PinBatchDirection, spacing: number) {
+    setProject((current) => {
+      const groupPins = current.pins.filter((pin) => pin.groupId === groupId);
+      if (groupPins.length < 2) return current;
+      const anchor = groupPins[0];
+      const nextSpacing = clamp(Math.round(spacing), 1, 240);
+      const nextPins = current.pins.map((pin) => {
+        const groupIndex = groupPins.findIndex((item) => item.id === pin.id);
+        if (groupIndex < 0) return pin;
+        const offset = getPinBatchOffset(direction, groupIndex, nextSpacing);
+        return {
+          ...pin,
+          x: Math.round(anchor.x + offset.x),
+          y: Math.round(anchor.y + offset.y),
+        };
+      });
+
+      return { ...current, pins: nextPins };
+    });
+  }
+
+  function ungroupSelectedPins() {
+    if (!selectedPinGroupId) return;
+    setProject((current) => ({
+      ...current,
+      pins: current.pins.map((pin) =>
+        pin.groupId === selectedPinGroupId ? { ...pin, groupId: null } : pin,
+      ),
+    }));
+    setSelectedPinGroupId(null);
+  }
+
+  function deletePinGroup(groupId: string) {
+    setProject((current) => {
+      const removePinIds = new Set(current.pins.filter((pin) => pin.groupId === groupId).map((pin) => pin.id));
+      return {
+        ...current,
+        pins: current.pins.filter((pin) => pin.groupId !== groupId),
+        wires: current.wires.filter((wire) => !removePinIds.has(wire.fromPinId) && !removePinIds.has(wire.toPinId)),
+      };
+    });
+    if (selectedPinGroupId === groupId) {
+      setSelectedPinGroupId(null);
+    }
+    setWireStartPinId(null);
   }
 
   function createNetworkTypeFromSelectedPin() {
@@ -1345,31 +1237,66 @@ export default function App() {
     }));
   }
 
-function movePin(pinId: string, board: Board, x: number, y: number) {
-  const visibleSize = getBoardVisibleSize(board);
-  const pinDragMargin = CANVAS_GRID_SIZE * 20;
-  const nextX = clamp(Math.round(x), -pinDragMargin, visibleSize.width + pinDragMargin);
-  const nextY = clamp(Math.round(y), -pinDragMargin, visibleSize.height + pinDragMargin);
-    setPinGuide({
-      x: board.x + nextX,
-      y: board.y + nextY,
-    });
+  function commitPinDrag(pin: Pin, board: Board, absolutePoint: { x: number; y: number }) {
+    const visibleSize = getBoardVisibleSize(board);
+    const pinDragMargin = gridSize * 20;
+    const nextLocal = getBoardLocalFromAbsolute(board, absolutePoint);
+    const nextX = clamp(Math.round(nextLocal.x), -pinDragMargin, visibleSize.width + pinDragMargin);
+    const nextY = clamp(Math.round(nextLocal.y), -pinDragMargin, visibleSize.height + pinDragMargin);
+    const deltaX = nextX - pin.x;
+    const deltaY = nextY - pin.y;
+    const movingGroupId = pin.groupId;
+
     setProject((current) => ({
       ...current,
-      pins: current.pins.map((pin) =>
-        pin.id === pinId
-          ? {
-              ...pin,
-              x: nextX,
-              y: nextY,
-            }
-          : pin,
-      ),
+      pins: current.pins.map((item) => {
+        const shouldMove = item.id === pin.id || (movingGroupId != null && item.groupId === movingGroupId);
+        if (!shouldMove) return item;
+        return {
+          ...item,
+          x: clamp(Math.round(item.x + deltaX), -pinDragMargin, visibleSize.width + pinDragMargin),
+          y: clamp(Math.round(item.y + deltaY), -pinDragMargin, visibleSize.height + pinDragMargin),
+        };
+      }),
+    }));
+  }
+
+  function commitPinGroupDrag(groupId: string, deltaX: number, deltaY: number) {
+    setProject((current) => ({
+      ...current,
+      pins: current.pins.map((pin) => {
+        if (pin.groupId !== groupId) return pin;
+        const board = current.boards.find((item) => item.id === pin.boardId);
+        if (!board) {
+          return {
+            ...pin,
+            x: Math.round(pin.x + deltaX),
+            y: Math.round(pin.y + deltaY),
+          };
+        }
+        const absolute = getPinAbsolute(pin, board);
+        const nextLocal = getBoardLocalFromAbsolute(board, {
+          x: absolute.x + deltaX,
+          y: absolute.y + deltaY,
+        });
+        return {
+          ...pin,
+          x: Math.round(nextLocal.x),
+          y: Math.round(nextLocal.y),
+        };
+      }),
     }));
   }
 
   function snapToGrid(value: number) {
-    return Math.round(value / CANVAS_GRID_SIZE) * CANVAS_GRID_SIZE;
+    return Math.round(value / gridSize) * gridSize;
+  }
+
+  function moveBoard(boardId: string, x: number, y: number) {
+    scheduleProjectUpdate((current) => ({
+      ...current,
+      boards: current.boards.map((item) => (item.id === boardId ? { ...item, x, y } : item)),
+    }));
   }
 
   function updateBoard(patch: Partial<Board>) {
@@ -1407,7 +1334,16 @@ function movePin(pinId: string, board: Board, x: number, y: number) {
     }));
   }
 
+  function rotateSelectedBoard(rotation: number) {
+    if (!selectedBoard) return;
+    updateBoard({ rotation: normalizeRotation(rotation) });
+  }
+
   function deleteBoard(boardId: string) {
+    const selectedGroupTouchesBoard = Boolean(
+      selectedPinGroupId &&
+        project.pins.some((pin) => pin.groupId === selectedPinGroupId && pin.boardId === boardId),
+    );
     setProject((current) => {
       const removePinIds = new Set(current.pins.filter((pin) => pin.boardId === boardId).map((pin) => pin.id));
       return {
@@ -1423,9 +1359,17 @@ function movePin(pinId: string, board: Board, x: number, y: number) {
     if (selectedPin && selectedPin.boardId === boardId) {
       setSelectedPinId(null);
     }
+    if (selectedGroupTouchesBoard) {
+      setSelectedPinGroupId(null);
+    }
   }
 
   function deleteSelected() {
+    if (selectedPinGroupId) {
+      deletePinGroup(selectedPinGroupId);
+      return;
+    }
+
     if (selectedPinId) {
       setProject((current) => ({
         ...current,
@@ -1449,29 +1393,66 @@ function movePin(pinId: string, board: Board, x: number, y: number) {
   }
 
   function clearProject() {
-    setProject(initialProject);
-    resetSelections();
+    replaceProject(initialProject);
   }
 
-  function exportPng() {
+  async function exportPng() {
     const stage = stageRef.current;
     if (!stage) return;
 
-    const uri = stage.toDataURL({ pixelRatio: 2 });
-    const link = document.createElement("a");
-    link.download = "aerowire-wiring.png";
-    link.href = uri;
-    link.click();
+    const bounds = getProjectExportBounds(project);
+    if (!bounds) {
+      window.alert("当前项目为空，没有可导出的图纸。");
+      return;
+    }
+
+    const maxPixelRatio = Math.min(EXPORT_MAX_IMAGE_SIDE / bounds.width, EXPORT_MAX_IMAGE_SIDE / bounds.height);
+    const pixelRatio = clamp(Math.min(EXPORT_TARGET_PIXEL_RATIO, maxPixelRatio), 0.5, EXPORT_TARGET_PIXEL_RATIO);
+    const previousPosition = stage.position();
+    const previousScale = stage.scale();
+
+    setIsCleanExporting(true);
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+
+    try {
+      stage.position({ x: 0, y: 0 });
+      stage.scale({ x: 1, y: 1 });
+      stage.batchDraw();
+
+      const uri = stage.toDataURL({
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: bounds.height,
+        pixelRatio,
+      });
+
+      const link = document.createElement("a");
+      link.download = "aerowire-wiring.png";
+      link.href = uri;
+      link.click();
+    } finally {
+      stage.position(previousPosition);
+      stage.scale(previousScale);
+      stage.batchDraw();
+      setIsCleanExporting(false);
+    }
   }
 
   function exportJson() {
-    const blob = new Blob([JSON.stringify(project, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "aerowire-project.json";
-    link.click();
-    URL.revokeObjectURL(url);
+    exportProjectJson(project);
+  }
+
+  async function exportProjectBundle() {
+    if (project.boards.length === 0) {
+      window.alert("当前项目没有板卡，暂时不需要打包。");
+      return;
+    }
+
+    const { missingAssetNames } = await downloadProjectBundle(project);
+    if (missingAssetNames.length > 0) {
+      window.alert(`项目包已导出，但这些板卡图片没有找到：${missingAssetNames.join("、")}。`);
+    }
   }
 
   function handleStageWheel(event: Konva.KonvaEventObject<WheelEvent>) {
@@ -1486,881 +1467,217 @@ function movePin(pinId: string, board: Board, x: number, y: number) {
     const scaleBy = 1.08;
     const direction = event.evt.deltaY > 0 ? -1 : 1;
     const nextScale = clamp(direction > 0 ? oldScale * scaleBy : oldScale / scaleBy, 0.4, 2.8);
+    const stagePositionNow = stage.position();
 
     const mousePointTo = {
-      x: (pointer.x - stagePosition.x) / oldScale,
-      y: (pointer.y - stagePosition.y) / oldScale,
+      x: (pointer.x - stagePositionNow.x) / oldScale,
+      y: (pointer.y - stagePositionNow.y) / oldScale,
+    };
+    const nextPosition = {
+      x: pointer.x - mousePointTo.x * nextScale,
+      y: pointer.y - mousePointTo.y * nextScale,
     };
 
     setScale(nextScale);
-    setStagePosition({
-      x: pointer.x - mousePointTo.x * nextScale,
-      y: pointer.y - mousePointTo.y * nextScale,
-    });
+    setStagePosition(nextPosition);
   }
 
-  const canDelete = Boolean(selectedPinId || selectedWireId || selectedBoardId);
+  const canDelete = Boolean(selectedPinGroupId || selectedPinId || selectedWireId || selectedBoardId);
+  const canUndo = undoStack.length > 0;
+  const canRedo = redoStack.length > 0;
+  const showEditorOverlays = !isDraggingProjectItem && !isCleanExporting;
+  const transientModeHint =
+    mode === "pin"
+      ? "添加锚点：点一下板卡即创建，随后自动回到选择。Esc 取消。"
+      : mode === "wire"
+        ? wireStartPinId
+          ? "连线：请选择第二个锚点完成连接，完成后自动回到选择。Esc 取消。"
+          : "连线：请选择第一个锚点，完成后自动回到选择。Esc 取消。"
+        : null;
 
   return (
     <main className="shell">
-      <header className="topbar">
-        <div className="brand">
-          <div className="brand-mark">AW</div>
-          <div>
-            <h1>AeroWire</h1>
-            <p>多板卡布线与电气规则检查</p>
-          </div>
-        </div>
-
-        <div className="toolbar" aria-label="工具栏">
-          <button className={mode === "select" ? "active" : ""} onClick={() => setMode("select")} title="选择模块">
-            <FolderOpen size={18} />
-          </button>
-          <button className={mode === "pin" ? "active" : ""} onClick={() => setMode("pin")} title="添加引脚">
-            <Plus size={18} />
-          </button>
-          <button className={mode === "wire" ? "active" : ""} onClick={() => setMode("wire")} title="跨板连线">
-            <Cable size={18} />
-          </button>
-          <button onClick={() => imageInputRef.current?.click()} title="导入板卡图片">
-            <ImagePlus size={18} />
-          </button>
-          <button onClick={() => projectInputRef.current?.click()} title="导入项目 JSON">
-            <FileUp size={18} />
-          </button>
-          <button onClick={exportPng} title="导出 PNG">
-            <Download size={18} />
-          </button>
-          <button onClick={exportJson} title="导出 JSON">
-            <Save size={18} />
-          </button>
-          <button onClick={deleteSelected} disabled={!canDelete} title="删除所选">
-            <Trash2 size={18} />
-          </button>
-        </div>
-
+      <TopBar
+        mode={mode}
+        canUndo={canUndo}
+        canRedo={canRedo}
+        canDelete={canDelete}
+        isPinMenuOpen={isPinMenuOpen}
+        isViewMenuOpen={isViewMenuOpen}
+        showGrid={showGrid}
+        gridSize={gridSize}
+        scale={scale}
+        pinBatchCount={pinBatchCount}
+        pinBatchSpacing={pinBatchSpacing}
+        pinBatchDirection={pinBatchDirection}
+        defaultPinSize={defaultPinSize}
+        onUndo={undoProject}
+        onRedo={redoProject}
+        onSelectMode={() => {
+          setMode("select");
+          setIsPinMenuOpen(false);
+        }}
+        onTogglePinMenu={() => {
+          setMode("pin");
+          setIsPinMenuOpen(true);
+          setIsViewMenuOpen(false);
+        }}
+        onWireMode={() => {
+          setMode("wire");
+          setIsPinMenuOpen(false);
+        }}
+        onImportImages={() => {
+          setIsPinMenuOpen(false);
+          imageInputRef.current?.click();
+        }}
+        onImportProject={() => {
+          setIsPinMenuOpen(false);
+          projectInputRef.current?.click();
+        }}
+        onExportPng={() => {
+          setIsPinMenuOpen(false);
+          void exportPng();
+        }}
+        onExportBundle={() => {
+          setIsPinMenuOpen(false);
+          void exportProjectBundle();
+        }}
+        onExportJson={() => {
+          setIsPinMenuOpen(false);
+          exportJson();
+        }}
+        onDeleteSelected={() => {
+          setIsPinMenuOpen(false);
+          deleteSelected();
+        }}
+        onToggleViewMenu={() => {
+          setIsViewMenuOpen((open) => !open);
+          setIsPinMenuOpen(false);
+        }}
+        onShowGridChange={setShowGrid}
+        onGridSizeChange={setGridSize}
+        onScaleChange={setScale}
+        onPinBatchCountChange={setPinBatchCount}
+        onPinBatchSpacingChange={setPinBatchSpacing}
+        onPinBatchDirectionChange={setPinBatchDirection}
+        onDefaultPinSizeChange={setDefaultPinSize}
+      />
+      <>
         <input ref={imageInputRef} type="file" accept="image/*" multiple hidden onChange={handleImportImages} />
-        <input ref={projectInputRef} type="file" accept="application/json,.json" hidden onChange={handleImportProject} />
+        <input
+          ref={projectInputRef}
+          type="file"
+          accept=".awire,application/json,.json"
+          hidden
+          onChange={handleImportProject}
+        />
         <datalist id="voltage-presets">
           {voltages.map((voltage) => (
             <option key={voltage} value={voltage} />
           ))}
         </datalist>
-      </header>
+      </>
 
       <section className="workspace">
-        <aside className="panel left">
-          <div className="panel-section">
-            <h2>项目</h2>
-            <div className="stat-grid">
-              <div>
-                <span>{project.boards.length}</span>
-                <small>模块</small>
-              </div>
-              <div>
-                <span>{project.pins.length}</span>
-                <small>引脚</small>
-              </div>
-              <div>
-                <span>{project.wires.length}</span>
-                <small>连线</small>
-              </div>
-            </div>
-            <div className="action-grid">
-              <button className="wide primary" onClick={() => imageInputRef.current?.click()}>
-                <ImagePlus size={17} />
-                导入板卡图片
-              </button>
-              <button className="wide" onClick={() => projectInputRef.current?.click()}>
-                <FileUp size={17} />
-                导入项目
-              </button>
-            </div>
-          </div>
+        <LeftPanel
+          project={project}
+          issues={issues}
+          transientModeHint={transientModeHint}
+          onImportImages={() => imageInputRef.current?.click()}
+          onImportProject={() => projectInputRef.current?.click()}
+          onExportProjectBundle={() => void exportProjectBundle()}
+          onClearProject={clearProject}
+          onFocusTarget={focusTarget}
+        />
 
-          <div className="panel-section">
-            <h2>ERC</h2>
-            <div className="erc-summary">
-              <Zap size={17} />
-              <span>{issues.length === 0 ? "当前没有阻断项" : `${issues.length} 个待确认问题`}</span>
-            </div>
-            <div className="issue-list">
-              {issues.length === 0 ? (
-                <p className="muted">多块板连在一起后，这里会显示电压、UART、悬空供电和板级完整性检查结果。</p>
-              ) : (
-                issues.map((issue) => (
-                  <button key={issue.id} className={`issue ${issue.severity}`} onClick={() => focusTarget(issue.target)}>
-                    {issue.text}
-                  </button>
-                ))
-              )}
-            </div>
-          </div>
+        <CanvasEditor
+          project={project}
+          stageWrapRef={stageWrapRef}
+          stageRef={stageRef}
+          stageSize={stageSize}
+          stagePosition={stagePosition}
+          scale={scale}
+          drawingBounds={drawingBounds}
+          gridSize={gridSize}
+          showGrid={showGrid}
+          showEditorOverlays={showEditorOverlays}
+          isDraggingProjectItem={isDraggingProjectItem}
+          pinGuide={pinGuide}
+          boardsById={boardsById}
+          pinsById={pinsById}
+          renderedWires={renderedWires}
+          selectedBoardId={selectedBoardId}
+          selectedWireId={selectedWireId}
+          selectedPinId={selectedPinId}
+          selectedPinGroupId={selectedPinGroupId}
+          wireStartPinId={wireStartPinId}
+          selectedWire={selectedWire}
+          wireBridgeMap={wireBridgeMap}
+          logicalNetworkLinks={logicalNetworkLinks}
+          pinGroups={pinGroups}
+          pinGroupDragRef={pinGroupDragRef}
+          snapToGrid={snapToGrid}
+          onStagePointerDown={handleStagePointerDown}
+          onStagePointerMove={handleStagePointerMove}
+          onStagePointerUp={handleStagePointerUp}
+          onStagePointerLeave={handleStagePointerLeave}
+          onStageWheel={handleStageWheel}
+          onBoardClick={handleBoardClick}
+          onBoardDragEnd={commitBoardDrag}
+          onWireClick={handleWireClick}
+          onWireDoubleClick={handleWireDoubleClick}
+          onWireLabelDragEnd={commitWireLabelDrag}
+          onSelectWire={selectWireOnly}
+          onUpdateWireBend={updateWireBend}
+          onRemoveWireBend={removeWireBend}
+          onSelectPinGroup={selectPinGroup}
+          onCommitPinGroupDrag={commitPinGroupDrag}
+          onPinClick={handlePinClick}
+          onRenamePin={renamePin}
+          onProjectItemDragStart={startProjectItemDrag}
+          onProjectItemDragEnd={finishProjectItemDrag}
+          onCommitPinDrag={handlePinDragCommit}
+          onPinLabelDragEnd={commitPinLabelDrag}
+        />
 
-          <div className="panel-section">
-            <h2>视图</h2>
-            <label className="field">
-              <span>缩放</span>
-              <input
-                type="range"
-                min="0.6"
-                max="1.8"
-                step="0.1"
-                value={scale}
-                onChange={(event) => setScale(Number(event.target.value))}
-              />
-            </label>
-            <button className="wide ghost" onClick={clearProject}>
-              <HardDriveDownload size={17} />
-              新建空白项目
-            </button>
-          </div>
-        </aside>
-
-        <div ref={stageWrapRef} className="canvas-wrap">
-          {project.boards.length === 0 && (
-            <div className="empty-state">
-              <ImagePlus size={36} />
-              <strong>导入多张板卡俯视图</strong>
-              <span>导入后先拖开位置，再逐块加引脚和连线会更顺手。</span>
-            </div>
-          )}
-
-          <Stage
-            ref={stageRef}
-            width={stageSize.width}
-            height={stageSize.height}
-            x={stagePosition.x}
-            y={stagePosition.y}
-            scaleX={scale}
-            scaleY={scale}
-            draggable={mode === "select"}
-            onDragStart={handleCanvasDragStart}
-            onDragEnd={(event) => {
-              const { x, y } = event.target.position();
-              setStagePosition({ x, y });
-            }}
-            onMouseDown={handleStagePointerDown}
-            onWheel={handleStageWheel}
-          >
-            <Layer>
-              <Rect x={0} y={0} width={stageSize.width / scale} height={stageSize.height / scale} fill="#edf1f4" />
-              {Array.from({ length: 42 }).map((_, index) => (
-                <Line
-                  key={`v-${index}`}
-                  points={[index * CANVAS_GRID_SIZE, 0, index * CANVAS_GRID_SIZE, stageSize.height / scale]}
-                  stroke="#d9e1e7"
-                  strokeWidth={1}
-                />
-              ))}
-              {Array.from({ length: 28 }).map((_, index) => (
-                <Line
-                  key={`h-${index}`}
-                  points={[0, index * CANVAS_GRID_SIZE, stageSize.width / scale, index * CANVAS_GRID_SIZE]}
-                  stroke="#d9e1e7"
-                  strokeWidth={1}
-                />
-              ))}
-              {pinGuide && (
-                <>
-                  <Line
-                    points={[pinGuide.x, 0, pinGuide.x, stageSize.height / scale]}
-                    stroke="#0f8b8d"
-                    strokeWidth={1}
-                    dash={[6, 6]}
-                    opacity={0.85}
-                  />
-                  <Line
-                    points={[0, pinGuide.y, stageSize.width / scale, pinGuide.y]}
-                    stroke="#0f8b8d"
-                    strokeWidth={1}
-                    dash={[6, 6]}
-                    opacity={0.85}
-                  />
-                </>
-              )}
-            </Layer>
-
-            <Layer>
-              {project.boards.map((board) => {
-                const isSelected = selectedBoardId === board.id;
-                const visibleSize = getBoardVisibleSize(board);
-                return (
-                  <Group
-                    key={board.id}
-                    x={board.x}
-                    y={board.y}
-                    draggable={mode === "select" && !board.locked}
-                    dragBoundFunc={(position) => ({
-                      x: snapToGrid(position.x),
-                      y: snapToGrid(position.y),
-                    })}
-                    onDragStart={(event) => {
-                      event.cancelBubble = true;
-                    }}
-                    onDragEnd={(event) => {
-                      event.cancelBubble = true;
-                      const { x, y } = event.target.position();
-                      setProject((current) => ({
-                        ...current,
-                        boards: current.boards.map((item) => (item.id === board.id ? { ...item, x, y } : item)),
-                      }));
-                    }}
-                    onClick={(event) => handleBoardClick(event, board)}
-                  >
-                    <Rect
-                      x={-10}
-                      y={-10}
-                      width={visibleSize.width + 20}
-                      height={visibleSize.height + 40}
-                      fill="#ffffff"
-                      stroke={isSelected ? "#0f8b8d" : "#ffffff"}
-                      strokeWidth={isSelected ? 2 : 1}
-                      cornerRadius={8}
-                      shadowColor="#1d2733"
-                      shadowOpacity={0.13}
-                      shadowBlur={14}
-                    />
-                    <BoardImage board={board} />
-                    <Text x={0} y={visibleSize.height + 14} text={board.name} fill="#26313d" fontSize={13} fontStyle="bold" />
-                    {board.locked && <Text x={visibleSize.width - 18} y={visibleSize.height + 14} text="L" fill="#7c5600" fontSize={12} fontStyle="bold" />}
-                  </Group>
-                );
-              })}
-            </Layer>
-
-            <Layer>
-              {logicalNetworkLinks.map((link) => (
-                <Group key={link.id}>
-                  <Line
-                    points={[link.from.x, link.from.y, link.to.x, link.to.y]}
-                    stroke="#76a9ad"
-                    strokeWidth={2}
-                    dash={[10, 7]}
-                    opacity={0.7}
-                  />
-                  <Text
-                    x={(link.from.x + link.to.x) / 2 + 6}
-                    y={(link.from.y + link.to.y) / 2 - 10}
-                    text={link.name}
-                    fill="#5d7c80"
-                    fontSize={11}
-                    fontStyle="bold"
-                  />
-                </Group>
-              ))}
-            </Layer>
-
-            <Layer>
-              {project.wires.map((wire) => {
-                const from = pinsById.get(wire.fromPinId);
-                const to = pinsById.get(wire.toPinId);
-                if (!from || !to) return null;
-                const fromBoard = boardsById.get(from.boardId);
-                const toBoard = boardsById.get(to.boardId);
-                if (!fromBoard || !toBoard) return null;
-                const a = getPinAbsolute(from, fromBoard);
-                const b = getPinAbsolute(to, toBoard);
-                const points = getWirePathFromBends(a, wire.bends, b);
-                const isSelected = selectedWireId === wire.id;
-                const midIndex = Math.max(0, Math.floor(points.length / 4) * 2 - 2);
-                const midX = points[midIndex] ?? a.x;
-                const midY = points[midIndex + 1] ?? a.y;
-                const bridges = wireBridgeMap.get(wire.id) ?? [];
-                const canEditBends = isSelected && mode === "select";
-
-                return (
-                  <Group
-                    key={wire.id}
-                    onClick={(event) => handleWireClick(event, wire.id)}
-                    onDblClick={(event) => {
-                      event.cancelBubble = true;
-                      const stage = event.target.getStage();
-                      const pointer = stage?.getPointerPosition();
-                      if (!pointer || mode !== "select") return;
-                      addWireBend(
-                        wire.id,
-                        (pointer.x - stagePosition.x) / scale,
-                        (pointer.y - stagePosition.y) / scale,
-                      );
-                    }}
-                  >
-                    <Line
-                      points={points}
-                      stroke={wire.color}
-                      strokeWidth={isSelected ? wire.width + 2 : wire.width}
-                      lineCap="round"
-                      lineJoin="round"
-                      bezier
-                      tension={0.4}
-                      dash={getWireDash(wire.lineStyle)}
-                      hitStrokeWidth={16}
-                      shadowColor={wire.status === "error" ? "#c62a24" : "transparent"}
-                      shadowBlur={wire.status === "error" ? 12 : 0}
-                    />
-                    {bridges.map((bridge, index) => (
-                      <Shape
-                        key={`${wire.id}-bridge-${index}`}
-                        sceneFunc={(context, shape) => {
-                          const radius = Math.max(7, wire.width + 3);
-                          context.beginPath();
-                          context.arc(bridge.x, bridge.y, radius, Math.PI, 0, false);
-                          context.lineWidth = Math.max(2, wire.width - 1);
-                          context.strokeStyle = wire.color;
-                          context.fillStyle = "#edf1f4";
-                          context.fill();
-                          context.stroke();
-                          context.fillStrokeShape(shape);
-                        }}
-                      />
-                    ))}
-                    {canEditBends &&
-                      wire.bends.map((bend) => (
-                        <Rect
-                          key={bend.id}
-                          x={bend.x - 7}
-                          y={bend.y - 7}
-                          width={14}
-                          height={14}
-                          fill="#ffffff"
-                          stroke="#0f8b8d"
-                          strokeWidth={2}
-                          cornerRadius={3}
-                          shadowColor="#1d2733"
-                          shadowBlur={6}
-                          shadowOpacity={0.15}
-                          draggable
-                          onDragStart={(event) => {
-                            event.cancelBubble = true;
-                          }}
-                          onDblClick={(event) => {
-                            event.cancelBubble = true;
-                            removeWireBend(wire.id, bend.id);
-                          }}
-                          onDragMove={(event) => {
-                            event.cancelBubble = true;
-                            updateWireBend(wire.id, bend.id, event.target.x() + 7, event.target.y() + 7);
-                          }}
-                          onDragEnd={(event) => {
-                            event.cancelBubble = true;
-                            updateWireBend(wire.id, bend.id, event.target.x() + 7, event.target.y() + 7);
-                          }}
-                        />
-                      ))}
-                    {wire.endStyle === "dot" && (
-                      <Circle x={b.x} y={b.y} radius={Math.max(4, wire.width)} fill={wire.color} />
-                    )}
-                    {wire.endStyle === "arrow" && (
-                      <Line
-                        points={
-                          wire.arrowDirection === "reverse"
-                            ? [a.x + 14, a.y - 8, a.x, a.y, a.x + 14, a.y + 8]
-                            : [b.x - 14, b.y - 8, b.x, b.y, b.x - 14, b.y + 8]
-                        }
-                        stroke={wire.color}
-                        strokeWidth={Math.max(2, wire.width - 1)}
-                        lineCap="round"
-                        lineJoin="round"
-                      />
-                    )}
-                    {wire.status !== "ok" && (
-                      <Text
-                        x={midX - 92}
-                        y={midY - 23}
-                        text={wire.status === "error" ? "ERR" : "CHECK"}
-                        fill={wire.status === "error" ? "#c62a24" : "#9a5a00"}
-                        fontSize={12}
-                        fontStyle="bold"
-                      />
-                    )}
-                    {wire.label.trim() !== "" && (
-                      <Text
-                        x={midX + wire.labelOffsetX}
-                        y={midY + wire.labelOffsetY}
-                        text={wire.label}
-                        fill="#3e4c59"
-                        fontSize={wire.labelFontSize}
-                        fontStyle="bold"
-                        draggable={mode !== "wire"}
-                        onDragStart={(event) => {
-                          event.cancelBubble = true;
-                          setSelectedWireId(wire.id);
-                          setSelectedPinId(null);
-                          setSelectedBoardId(null);
-                        }}
-                        onDragMove={(event) => {
-                          event.cancelBubble = true;
-                          updateWireById(wire.id, {
-                            labelOffsetX: Math.round(event.target.x() - midX),
-                            labelOffsetY: Math.round(event.target.y() - midY),
-                          });
-                        }}
-                        onDragEnd={(event) => {
-                          event.cancelBubble = true;
-                          updateWireById(wire.id, {
-                            labelOffsetX: Math.round(event.target.x() - midX),
-                            labelOffsetY: Math.round(event.target.y() - midY),
-                          });
-                        }}
-                      />
-                    )}
-                  </Group>
-                );
-              })}
-            </Layer>
-
-            <Layer>
-              {project.pins.map((pin) => {
-                const board = boardsById.get(pin.boardId);
-                if (!board) return null;
-                const position = getPinAbsolute(pin, board);
-                const isSelected = selectedPinId === pin.id;
-                const isWireStart = wireStartPinId === pin.id;
-                const pinCanDrag = mode !== "wire";
-
-                return (
-                  <Group
-                    key={pin.id}
-                    x={position.x}
-                    y={position.y}
-                    draggable={pinCanDrag}
-                    onClick={(event) => handlePinClick(event, pin)}
-                    onDblClick={(event) => {
-                      event.cancelBubble = true;
-                      renamePin(pin);
-                    }}
-                    onDragStart={(event) => {
-                      event.cancelBubble = true;
-                      setSelectedPinId(pin.id);
-                      setSelectedBoardId(pin.boardId);
-                      setSelectedWireId(null);
-                    }}
-                    onDragMove={(event) => {
-                      event.cancelBubble = true;
-                      movePin(pin.id, board, event.target.x() - board.x, event.target.y() - board.y);
-                    }}
-                    onDragEnd={(event) => {
-                      event.cancelBubble = true;
-                      movePin(pin.id, board, event.target.x() - board.x, event.target.y() - board.y);
-                      setPinGuide(null);
-                    }}
-                  >
-                    <Circle
-                      radius={isSelected || isWireStart ? 9 : 7}
-                      fill={pinColorByKind[pin.kind]}
-                      stroke={isWireStart ? "#ffffff" : isSelected ? "#101820" : "#ffffff"}
-                      strokeWidth={isSelected || isWireStart ? 3 : 2}
-                      shadowColor="#111827"
-                      shadowBlur={7}
-                      shadowOpacity={0.2}
-                    />
-                    <Text
-                      x={pin.labelOffsetX}
-                      y={pin.labelOffsetY}
-                      text={pin.label}
-                      fill="#111827"
-                      fontSize={12}
-                      fontStyle="bold"
-                      draggable={mode !== "wire"}
-                      onDblClick={(event) => {
-                        event.cancelBubble = true;
-                        renamePin(pin);
-                      }}
-                      onDragStart={(event) => {
-                        event.cancelBubble = true;
-                        setSelectedPinId(pin.id);
-                        setSelectedBoardId(pin.boardId);
-                        setSelectedWireId(null);
-                      }}
-                      onDragMove={(event) => {
-                        event.cancelBubble = true;
-                        setProject((current) => ({
-                          ...current,
-                          pins: current.pins.map((item) =>
-                            item.id === pin.id
-                              ? {
-                                  ...item,
-                                  labelOffsetX: Math.round(event.target.x()),
-                                  labelOffsetY: Math.round(event.target.y()),
-                                }
-                              : item,
-                          ),
-                        }));
-                      }}
-                      onDragEnd={(event) => {
-                        event.cancelBubble = true;
-                        setProject((current) => ({
-                          ...current,
-                          pins: current.pins.map((item) =>
-                            item.id === pin.id
-                              ? {
-                                  ...item,
-                                  labelOffsetX: Math.round(event.target.x()),
-                                  labelOffsetY: Math.round(event.target.y()),
-                                }
-                              : item,
-                          ),
-                        }));
-                      }}
-                    />
-                  </Group>
-                );
-              })}
-            </Layer>
-          </Stage>
-        </div>
-
-        <aside className="panel right">
-          <div className="panel-section">
-            <h2>模块属性</h2>
-            {selectedBoard ? (
-              <div className="form">
-                {(() => {
-                  const visibleSize = getBoardVisibleSize(selectedBoard);
-                  return (
-                    <>
-                      <label className="field">
-                        <span>名称</span>
-                        <input value={selectedBoard.name} onChange={(event) => updateBoard({ name: event.target.value })} />
-                      </label>
-                      <label className="field">
-                        <span>缩放 {selectedBoard.scale.toFixed(2)}x</span>
-                        <input
-                          type="range"
-                          min="0.2"
-                          max="2.5"
-                          step="0.05"
-                          value={selectedBoard.scale}
-                          onChange={(event) => transformSelectedBoard({ scale: Number(event.target.value) })}
-                        />
-                      </label>
-                      <div className="crop-grid">
-                        <label className="field compact">
-                          <span>裁左</span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={Math.max(0, selectedBoard.originalWidth - selectedBoard.crop.right - 24)}
-                            value={selectedBoard.crop.left}
-                            onChange={(event) =>
-                              transformSelectedBoard({ crop: { left: Number(event.target.value) } as BoardCrop })
-                            }
-                          />
-                        </label>
-                        <label className="field compact">
-                          <span>裁右</span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={Math.max(0, selectedBoard.originalWidth - selectedBoard.crop.left - 24)}
-                            value={selectedBoard.crop.right}
-                            onChange={(event) =>
-                              transformSelectedBoard({ crop: { right: Number(event.target.value) } as BoardCrop })
-                            }
-                          />
-                        </label>
-                        <label className="field compact">
-                          <span>裁上</span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={Math.max(0, selectedBoard.originalHeight - selectedBoard.crop.bottom - 24)}
-                            value={selectedBoard.crop.top}
-                            onChange={(event) =>
-                              transformSelectedBoard({ crop: { top: Number(event.target.value) } as BoardCrop })
-                            }
-                          />
-                        </label>
-                        <label className="field compact">
-                          <span>裁下</span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={Math.max(0, selectedBoard.originalHeight - selectedBoard.crop.top - 24)}
-                            value={selectedBoard.crop.bottom}
-                            onChange={(event) =>
-                              transformSelectedBoard({ crop: { bottom: Number(event.target.value) } as BoardCrop })
-                            }
-                          />
-                        </label>
-                      </div>
-                      <label className="field checkbox-field">
-                        <input
-                          type="checkbox"
-                          checked={selectedBoard.locked}
-                          onChange={(event) => updateBoard({ locked: event.target.checked })}
-                        />
-                        <span>锁定位置</span>
-                      </label>
-                      <div className="inline-note">
-                        <span>{Math.round(selectedBoard.x)}, {Math.round(selectedBoard.y)}</span>
-                        <small>位置</small>
-                      </div>
-                      <div className="inline-note">
-                        <span>{visibleSize.width} x {visibleSize.height}</span>
-                        <small>可见尺寸</small>
-                      </div>
-                      <div className="inline-note">
-                        <span>{project.pins.filter((pin) => pin.boardId === selectedBoard.id).length}</span>
-                        <small>引脚数</small>
-                      </div>
-                      <button className="wide danger" onClick={() => deleteBoard(selectedBoard.id)}>
-                        <Trash2 size={17} />
-                        删除模块
-                      </button>
-                    </>
-                  );
-                })()}
-              </div>
-            ) : (
-              <p className="muted">选择一个模块后可以改名、锁定位置或整块删除。</p>
-            )}
-          </div>
-
-          <div className="panel-section">
-            <h2>引脚属性</h2>
-            {selectedPin ? (
-              <div className="form">
-                <label className="field">
-                  <span>名称</span>
-                  <input value={selectedPin.label} onChange={(event) => updatePin({ label: event.target.value })} />
-                </label>
-                <label className="field">
-                  <span>显示类型</span>
-                  <input value={selectedPin.typeLabel} onChange={(event) => updatePin({ typeLabel: event.target.value })} />
-                </label>
-                <label className="field">
-                  <span>规则类型</span>
-                  <select value={selectedPin.kind} onChange={(event) => updatePin({ kind: event.target.value as PinKind })}>
-                    {pinKinds.map((kind) => (
-                      <option key={kind} value={kind}>
-                        {kind}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
-                  <span>逻辑网络</span>
-                  <select
-                    value={selectedPin.networkTypeId ?? ""}
-                    onChange={(event) => applyNetworkTypeToSelectedPin(event.target.value === "" ? null : event.target.value)}
-                  >
-                    <option value="">未指定</option>
-                    {project.networkTypes.map((networkType) => (
-                      <option key={networkType.id} value={networkType.id}>
-                        {networkType.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button className="wide" onClick={createNetworkTypeFromSelectedPin}>
-                  <Plus size={17} />
-                  从当前引脚创建网络类型
-                </button>
-                {selectedPin.networkTypeId && (
-                  <button className="wide ghost" onClick={materializeSelectedPinNetwork}>
-                    <Cable size={17} />
-                    同网络转真实导线
-                  </button>
-                )}
-                <label className="field">
-                  <span>电压</span>
-                  <input
-                    list="voltage-presets"
-                    value={selectedPin.voltage}
-                    onChange={(event) => updatePin({ voltage: event.target.value })}
-                    placeholder="例如 4.2V / 5V / VBAT / 1S"
-                  />
-                </label>
-                <label className="field">
-                  <span>最大电流 mA</span>
-                  <input
-                    type="number"
-                    min={0}
-                    value={selectedPin.maxCurrentMa}
-                    onChange={(event) => updatePin({ maxCurrentMa: Number(event.target.value) })}
-                  />
-                </label>
-              </div>
-            ) : (
-              <p className="muted">选择一个锚点后可以定义它的电气属性。</p>
-            )}
-          </div>
-
-          <div className="panel-section">
-            <h2>连线状态</h2>
-            {selectedWire ? (
-              (() => {
-                const from = pinsById.get(selectedWire.fromPinId);
-                const to = pinsById.get(selectedWire.toPinId);
-                const fromBoard = from ? boardsById.get(from.boardId) : null;
-                const toBoard = to ? boardsById.get(to.boardId) : null;
-                const pathLengthPx =
-                  from && to && fromBoard && toBoard
-                    ? (() => {
-                        const a = getPinAbsolute(from, fromBoard);
-                        const b = getPinAbsolute(to, toBoard);
-                        return Math.round(
-                          getWirePathLength(getWirePathFromBends(a, selectedWire.bends, b)),
-                        );
-                      })()
-                    : 0;
-
-                return (
-                  <div className="form">
-                    <div className={`wire-card ${selectedWire.status}`}>
-                      <strong>{selectedWire.status.toUpperCase()}</strong>
-                      <span>{selectedWire.message}</span>
-                    </div>
-                    <div className="inline-note">
-                      <span>{`${from?.label ?? "?"} -> ${to?.label ?? "?"}`}</span>
-                      <small>锚点</small>
-                    </div>
-                    <div className="inline-note">
-                      <span>{`${fromBoard?.name ?? "?"} -> ${toBoard?.name ?? "?"}`}</span>
-                      <small>模块</small>
-                    </div>
-                    <div className="inline-note">
-                      <span>{pathLengthPx}px</span>
-                      <small>路径长度</small>
-                    </div>
-                    <label className="field">
-                      <span>线色</span>
-                      <input type="color" value={selectedWire.color} onChange={(event) => updateWire({ color: event.target.value })} />
-                    </label>
-                    <label className="field">
-                      <span>线型</span>
-                      <select value={selectedWire.lineStyle} onChange={(event) => updateWire({ lineStyle: event.target.value as WireLineStyle })}>
-                        {wireLineStyles.map((style) => (
-                          <option key={style} value={style}>
-                            {style}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="field">
-                      <span>端点样式</span>
-                      <select value={selectedWire.endStyle} onChange={(event) => updateWire({ endStyle: event.target.value as WireEndStyle })}>
-                        {wireEndStyles.map((style) => (
-                          <option key={style} value={style}>
-                            {style}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    {selectedWire.endStyle === "arrow" && (
-                      <label className="field">
-                        <span>箭头方向</span>
-                        <select
-                          value={selectedWire.arrowDirection}
-                          onChange={(event) => updateWire({ arrowDirection: event.target.value as WireArrowDirection })}
-                        >
-                          {wireArrowDirections.map((direction) => (
-                            <option key={direction} value={direction}>
-                              {direction}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    )}
-                    <label className="field">
-                      <span>线宽 {selectedWire.width}px</span>
-                      <input
-                        type="range"
-                        min="2"
-                        max="10"
-                        step="1"
-                        value={selectedWire.width}
-                        onChange={(event) => updateWire({ width: Number(event.target.value) })}
-                      />
-                    </label>
-                    <label className="field">
-                      <span>标注文本</span>
-                      <input
-                        value={selectedWire.label}
-                        onChange={(event) => updateWire({ label: event.target.value })}
-                      />
-                    </label>
-                    <label className="field">
-                      <span>标注字号 {selectedWire.labelFontSize}px</span>
-                      <input
-                        type="range"
-                        min="10"
-                        max="24"
-                        step="1"
-                        value={selectedWire.labelFontSize}
-                        onChange={(event) => updateWire({ labelFontSize: Number(event.target.value) })}
-                      />
-                    </label>
-                  </div>
-                );
-              })()
-            ) : (
-              <p className="muted">{mode === "wire" && wireStartPinId ? "请选择第二个引脚完成连线。" : "选择一条线查看 ERC 结果。"}</p>
-            )}
-          </div>
-
-          <div className="panel-section">
-            <h2>网络类型</h2>
-            <button className="wide" onClick={createNetworkType}>
-              <Plus size={17} />
-              新建网络类型
-            </button>
-            <div className="board-list" style={{ marginTop: 12 }}>
-              {project.networkTypes.length === 0 ? (
-                <p className="muted">还没有自定义网络类型。</p>
-              ) : (
-                project.networkTypes.map((networkType) => (
-                  <div key={networkType.id} className="network-card">
-                    <input
-                      value={networkType.name}
-                      onChange={(event) => updateNetworkType(networkType.id, { name: event.target.value })}
-                    />
-                    <select
-                      value={networkType.baseKind}
-                      onChange={(event) => updateNetworkType(networkType.id, { baseKind: event.target.value as PinKind })}
-                    >
-                      {pinKinds.map((kind) => (
-                        <option key={kind} value={kind}>
-                          {kind}
-                        </option>
-                      ))}
-                    </select>
-                    <input
-                      value={networkType.defaultVoltage}
-                      onChange={(event) => updateNetworkType(networkType.id, { defaultVoltage: event.target.value })}
-                      placeholder="默认电压"
-                    />
-                    <button className="wide danger" onClick={() => deleteNetworkType(networkType.id)}>
-                      <Trash2 size={17} />
-                      删除
-                    </button>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-
-          <div className="panel-section">
-            <h2>模块列表</h2>
-            <div className="board-list">
-              {project.boards.length === 0 ? (
-                <p className="muted">暂无模块。</p>
-              ) : (
-                project.boards.map((board) => (
-                  <button
-                    key={board.id}
-                    className={`board-row ${selectedBoardId === board.id ? "active" : ""}`}
-                    onClick={() => focusTarget({ kind: "board", id: board.id })}
-                  >
-                    <span>{board.name}</span>
-                    <small>{board.locked ? "locked" : `${project.pins.filter((pin) => pin.boardId === board.id).length} pins`}</small>
-                  </button>
-                ))
-              )}
-            </div>
-          </div>
-        </aside>
+        <RightPanel
+          project={project}
+          mode={mode}
+          wireStartPinId={wireStartPinId}
+          selectedBoard={selectedBoard}
+          selectedBoardId={selectedBoardId}
+          selectedPin={selectedPin}
+          selectedPinGroup={selectedPinGroup}
+          selectedPinGroupId={selectedPinGroupId}
+          selectedPinGroupInfo={selectedPinGroupInfo}
+          selectedPinGroupDirection={selectedPinGroupDirection}
+          selectedPinGroupSpacing={selectedPinGroupSpacing}
+          selectedPinGroupSize={selectedPinGroupSize}
+          selectedPinGroupLabelColor={selectedPinGroupLabelColor}
+          selectedPinGroupLabelFontSize={selectedPinGroupLabelFontSize}
+          selectedPinGroupLabelFontFamily={selectedPinGroupLabelFontFamily}
+          selectedWire={selectedWire}
+          boardsById={boardsById}
+          pinsById={pinsById}
+          pinBatchSpacing={pinBatchSpacing}
+          onUpdateBoard={updateBoard}
+          onTransformSelectedBoard={transformSelectedBoard}
+          onRotateSelectedBoard={rotateSelectedBoard}
+          onDeleteBoard={deleteBoard}
+          onUpdatePin={updatePin}
+          onUpdatePinGroup={updatePinGroup}
+          onUpdatePinGroupLayout={updatePinGroupLayout}
+          onUngroupSelectedPins={ungroupSelectedPins}
+          onDeletePinGroup={deletePinGroup}
+          onCreateNetworkTypeFromSelectedPin={createNetworkTypeFromSelectedPin}
+          onApplyNetworkTypeToSelectedPin={applyNetworkTypeToSelectedPin}
+          onMaterializeSelectedPinNetwork={materializeSelectedPinNetwork}
+          onUpdateWire={updateWire}
+          onCreateNetworkType={createNetworkType}
+          onUpdateNetworkType={updateNetworkType}
+          onDeleteNetworkType={deleteNetworkType}
+          onFocusTarget={focusTarget}
+        />
       </section>
     </main>
   );
